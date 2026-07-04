@@ -883,19 +883,22 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
     rowsAoa.slice(1).forEach((cols,li)=>{
       if(!cols||cols.every(c=>String(c==null?"":c).trim()==="")) return;
       const rec={}; Mm.fields.forEach(([fk],i)=>{ rec[fk]=String(cols[idx[i]]==null?"":cols[idx[i]]).replace(/"/g,"").trim(); });
-      if(Mm.fields.some(([fk])=>!rec[fk])){ errors.push(`Fila ${li+2}: hay campos vacíos.`); return; }
+      // Solo validar campos obligatorios (marcados con " *" en su label)
+      const requiredFields=Mm.fields.filter(([,label])=>label.includes(" *")).map(([fk])=>fk);
+      const missingFields=requiredFields.filter(fk=>!rec[fk]);
+      if(missingFields.length){ errors.push(`Fila ${li+2}: campos obligatorios vacíos: ${missingFields.join(", ")}.`); return; }
       if(Mm.dateField){ const iso=toISO(rec[Mm.dateField]); if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)){ errors.push(`Fila ${li+2}: fecha inválida "${rec[Mm.dateField]}" (usa AAAA-MM-DD o DD/MM/AAAA).`); return; } rec[Mm.dateField]=iso; }
       const k=Mm.keyOf(rec);
       if(seen.has(k)){ errors.push(`Fila ${li+2}: duplicado (${k}).`); return; }
-      seen.add(k); newItems.push({id:Date.now()+(seq++),...rec});
+      seen.add(k); newItems.push({...rec}); seq++;
     });
     if(newItems.length){
       try{
         const inserted=await db[importTab].insertMany(newItems);
-        setD(arr=>[...arr,...(inserted||newItems)]);
+        setD(arr=>[...arr,...(inserted||[])]);
       }catch(e){ errors.push("Error al guardar en BD: "+e.message); }
     }
-    setImportResult({ok:newItems.length,errors});
+    setImportResult({ok:newItems.length,errors,total:rowsAoa.length-1});
   };
 
   // Acepta Excel (.xlsx/.xls) y CSV/TXT (coma, ; o tabulación).
@@ -911,7 +914,7 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
           const XL=await loadXLSX();
           const wb=XL.read(new Uint8Array(ev.target.result),{type:"array"});
           const ws=wb.Sheets[wb.SheetNames[0]];
-          processRows(XL.utils.sheet_to_json(ws,{header:1,raw:false,defval:""}));
+          await processRows(XL.utils.sheet_to_json(ws,{header:1,raw:false,defval:""}),importTab);
         } else {
           const text=String(ev.target.result).replace(/^\uFEFF/,"");
           const lines=text.split(/\r?\n/).filter(l=>l.trim());
@@ -944,7 +947,7 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
           </div>
           {importResult&&(
             <div style={{marginTop:10,background:importResult.ok>0?"#f0fdf4":"#fef2f2",border:`1px solid ${importResult.ok>0?"#bbf7d0":"#fecaca"}`,borderRadius:6,padding:10}}>
-              {importResult.ok>0&&<div style={{color:"#166534",fontWeight:"bold",fontSize:13,marginBottom:4}}>\u2705 {importResult.ok} importados.</div>}
+              {importResult.ok>0&&<div style={{color:"#166534",fontWeight:"bold",fontSize:13,marginBottom:4}}>\u2705 {importResult.ok} de {importResult.total||"?"} filas importadas correctamente.</div>}
               {importResult.errors.map((e,i)=><div key={i} style={{fontSize:11,color:C.danger}}>\u2022 {e}</div>)}
             </div>
           )}
