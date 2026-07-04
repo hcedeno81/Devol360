@@ -27,11 +27,25 @@ const toSnake = (obj) => {
   );
 };
 
+// Trae TODOS los registros de una tabla superando el límite de 1000 de Supabase.
+// Pagina automáticamente hasta obtener el total completo.
+async function fetchAll(query, pageSize = 1000) {
+  let all = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await query(from, from + pageSize - 1);
+    if (error) throw error;
+    all = all.concat(data || []);
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 export const db = {
   users: {
     async list() {
-      const { data, error } = await supabase.from('fk_users').select('*').order('id');
-      if (error) throw error;
+      const data = await fetchAll((f,t) => supabase.from('fk_users').select('*').order('id').range(f,t));
       return toCamel(data);
     },
     async insert(user) {
@@ -48,8 +62,7 @@ export const db = {
 
   invites: {
     async list() {
-      const { data, error } = await supabase.from('fk_invites').select('*').order('id');
-      if (error) throw error;
+      const data = await fetchAll((f,t) => supabase.from('fk_invites').select('*').order('id').range(f,t));
       return toCamel(data);
     },
     async insert(invite) {
@@ -66,8 +79,7 @@ export const db = {
 
   motivos: {
     async list() {
-      const { data, error } = await supabase.from('fk_motivos').select('*').order('codigo');
-      if (error) throw error;
+      const data = await fetchAll((f,t) => supabase.from('fk_motivos').select('*').order('codigo').range(f,t));
       return toCamel(data);
     },
     async insert(row) {
@@ -97,8 +109,7 @@ export const db = {
 
   plotes: {
     async list() {
-      const { data, error } = await supabase.from('fk_plotes').select('*').order('codigo').order('lote');
-      if (error) throw error;
+      const data = await fetchAll((f,t) => supabase.from('fk_plotes').select('*').order('codigo').order('lote').range(f,t));
       return (toCamel(data) || []).map(r => ({ ...r, fechaCad: r.fechaCad }));
     },
     async insert(row) {
@@ -131,8 +142,7 @@ export const db = {
 
   facturas: {
     async list() {
-      const { data, error } = await supabase.from('fk_facturas').select('*').order('cod_cliente').order('no_factura');
-      if (error) throw error;
+      const data = await fetchAll((f,t) => supabase.from('fk_facturas').select('*').order('cod_cliente').order('no_factura').range(f,t));
       return (data || []).map(r => ({
         id:             r.id,
         codCliente:     r.cod_cliente,
@@ -203,8 +213,7 @@ export const db = {
 
   notas: {
     async list() {
-      const { data, error } = await supabase.from('fk_notas').select('*').order('id', { ascending: false });
-      if (error) throw error;
+      const data = await fetchAll((f,t) => supabase.from('fk_notas').select('*').order('id', { ascending: false }).range(f,t));
       return (data || []).map(r => ({
         id:               r.id,
         ndv:              r.ndv,
