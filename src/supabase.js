@@ -50,6 +50,21 @@ async function fetchAll(query, pageSize = 1000) {
   return all;
 }
 
+// Sanitiza el término de búsqueda para consultas ILIKE dentro de .or():
+// elimina caracteres que romperían el patrón o la sintaxis del filtro.
+const san = (q) => String(q || '').replace(/[%_,()]/g, ' ').trim();
+
+// Mapea una fila cruda de fk_facturas al formato de la app, con trim defensivo.
+const trf = (v) => (typeof v === 'string' ? v.trim() : v);
+const mapFactura = (r) => ({
+  id: r.id,
+  codCliente: trf(r.cod_cliente), nombreCliente: trf(r.nombre_cliente),
+  noFactura: trf(r.no_factura), codMaterial: trf(r.cod_material),
+  nombre: trf(r.nombre_material), lote: trf(r.lote),
+  cantidad: r.cantidad, valor: r.valor,
+  vendedor: trf(r.vendedor), facturador: trf(r.facturador),
+});
+
 // Mapea una fila cruda de fk_notas (snake_case) al formato de la app (camelCase).
 const mapNota = (r) => ({
   id:               r.id,
@@ -165,15 +180,27 @@ export const db = {
       const tr=(v)=> typeof v==="string" ? v.trim() : v;
       return toCamel(data).map(r => ({ ...r, codigo: tr(r.codigo), descripcion: tr(r.descripcion) }));
     },
+    // Página para la pantalla de Maestros (motivos es pequeño, pero se usa la
+    // misma mecánica por consistencia).
+    async page({ page = 0, pageSize = 50, q = '' } = {}) {
+      let query = supabase.from('fk_motivos').select('*', { count: 'exact' });
+      const s = san(q);
+      if (s) query = query.or(`codigo.ilike.%${s}%,descripcion.ilike.%${s}%`);
+      const from = page * pageSize;
+      const { data, count, error } = await query.order('codigo').range(from, from + pageSize - 1);
+      if (error) throw error;
+      const tr=(v)=> typeof v==="string" ? v.trim() : v;
+      return { rows: (data || []).map(r => ({ id:r.id, codigo:tr(r.codigo), descripcion:tr(r.descripcion) })), total: count || 0 };
+    },
     async insert(row) {
-      const { data, error } = await supabase.from('fk_motivos').insert(toSnake(row)).select().single();
+      const { data, error } = await supabase.from('fk_motivos').upsert(toSnake(row), { onConflict: 'codigo' }).select().single();
       if (error) throw error;
       return toCamel(data);
     },
     async insertMany(rows) {
-      const { data, error } = await supabase.from('fk_motivos').insert(rows.map(toSnake)).select();
+      const { data, error } = await supabase.from('fk_motivos').upsert(rows.map(toSnake), { onConflict: 'codigo' }).select('id');
       if (error) throw error;
-      return toCamel(data);
+      return data || [];
     },
     async update(id, patch) {
       const { data, error } = await supabase.from('fk_motivos').update(toSnake(patch)).eq('id', id).select().single();
@@ -191,31 +218,46 @@ export const db = {
   },
 
   plotes: {
-    async list() {
-      const data = await fetchAll((f,t) => supabase.from('fk_plotes').select('*').order('codigo').order('lote').range(f,t));
+    // Fecha de caducidad de un lote específico — consulta puntual, indexada.
+    async fechaCad(codigo, lote) {
+      const { data, error } = await supabase.from('fk_plotes')
+        .select('fecha_cad')
+        .eq('codigo', codigo).eq('lote', lote)
+        .limit(1);
+      if (error) throw error;
+      return data && data[0] ? data[0].fecha_cad : "";
+    },
+    // Página para la pantalla de Maestros.
+    async page({ page = 0, pageSize = 50, q = '' } = {}) {
+      let query = supabase.from('fk_plotes').select('*', { count: 'estimated' });
+      const s = san(q);
+      if (s) query = query.or(`codigo.ilike.%${s}%,lote.ilike.%${s}%,nombre.ilike.%${s}%`);
+      const from = page * pageSize;
+      const { data, count, error } = await query.order('id', { ascending: false }).range(from, from + pageSize - 1);
+      if (error) throw error;
       const tr=(v)=> typeof v==="string" ? v.trim() : v;
-      return (toCamel(data) || []).map(r => ({
-        ...r,
-        codigo: tr(r.codigo),
-        lote: tr(r.lote),
-        nombre: tr(r.nombre),
-        fechaCad: r.fechaCad,
-      }));
+      return {
+        rows: (data || []).map(r => ({ id:r.id, lote:tr(r.lote), codigo:tr(r.codigo), nombre:tr(r.nombre), fechaCad:r.fecha_cad, tempAlm:tr(r.temp_alm) })),
+        total: count || 0,
+      };
+    },
+    // UPSERT por lote+codigo: recargas regulares sin duplicados.
+    async insertMany(rows) {
+      const recs = rows.map(r => ({ lote: String(r.lote||"").trim(), codigo: String(r.codigo||"").trim(), nombre: String(r.nombre||"").trim(), fecha_cad: r.fechaCad, temp_alm: String(r.tempAlm||"").trim() }));
+      const { data, error } = await supabase.from('fk_plotes')
+        .upsert(recs, { onConflict: 'lote,codigo' })
+        .select('id');
+      if (error) throw error;
+      return data || [];
     },
     async insert(row) {
-      const rec = { lote: row.lote, codigo: row.codigo, nombre: row.nombre, fecha_cad: row.fechaCad, temp_alm: row.tempAlm };
-      const { data, error } = await supabase.from('fk_plotes').insert(rec).select().single();
-      if (error) throw error;
-      return toCamel(data);
-    },
-    async insertMany(rows) {
-      const recs = rows.map(r => ({ lote: r.lote, codigo: r.codigo, nombre: r.nombre, fecha_cad: r.fechaCad, temp_alm: r.tempAlm }));
-      const { data, error } = await supabase.from('fk_plotes').insert(recs).select();
+      const rec = { lote: String(row.lote||"").trim(), codigo: String(row.codigo||"").trim(), nombre: String(row.nombre||"").trim(), fecha_cad: row.fechaCad, temp_alm: String(row.tempAlm||"").trim() };
+      const { data, error } = await supabase.from('fk_plotes').upsert(rec, { onConflict: 'lote,codigo' }).select().single();
       if (error) throw error;
       return toCamel(data);
     },
     async update(id, row) {
-      const rec = { lote: row.lote, codigo: row.codigo, nombre: row.nombre, fecha_cad: row.fechaCad, temp_alm: row.tempAlm };
+      const rec = { lote: String(row.lote||"").trim(), codigo: String(row.codigo||"").trim(), nombre: String(row.nombre||"").trim(), fecha_cad: row.fechaCad, temp_alm: String(row.tempAlm||"").trim() };
       const { data, error } = await supabase.from('fk_plotes').update(rec).eq('id', id).select().single();
       if (error) throw error;
       return toCamel(data);
@@ -230,27 +272,93 @@ export const db = {
     },
   },
 
+  clientes: {
+    // Búsqueda de clientes en el SERVIDOR sobre la tabla derivada fk_clientes
+    // (pequeña y con índices trigram) — nunca se descarga el maestro completo.
+    async search(q) {
+      let query = supabase.from('fk_clientes').select('cod,nombre').order('nombre').limit(15);
+      const s = san(q);
+      if (s) query = query.or(`cod.ilike.%${s}%,nombre.ilike.%${s}%`);
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data || []).map(r => ({ cod: trf(r.cod), label: trf(r.nombre) || trf(r.cod) }));
+    },
+  },
+
   facturas: {
-    async list() {
-      const data = await fetchAll((f,t) => supabase.from('fk_facturas').select('*').order('cod_cliente').order('no_factura').range(f,t));
-      // Trim defensivo: neutraliza espacios invisibles (copiados de Excel, datos
-      // cargados antes de existir la validación de importación, etc.) que romperían
-      // los filtros por igualdad estricta (===) usados para relacionar
-      // cliente → producto → lote → factura en toda la app.
-      const tr=(v)=> typeof v==="string" ? v.trim() : v;
-      return (data || []).map(r => ({
-        id:             r.id,
-        codCliente:     tr(r.cod_cliente),
-        nombreCliente:  tr(r.nombre_cliente),
-        noFactura:      tr(r.no_factura),
-        codMaterial:    tr(r.cod_material),
-        nombre:         tr(r.nombre_material),
-        lote:           tr(r.lote),
-        cantidad:       r.cantidad,
-        valor:          r.valor,
-        vendedor:       tr(r.vendedor),
-        facturador:     tr(r.facturador),
+    // ── Consultas puntuales para la cascada del formulario ──────────────────
+    // Productos vendidos al cliente que coinciden con lo escrito (máx. 15).
+    async searchProductos(codCliente, q) {
+      let query = supabase.from('fk_facturas')
+        .select('cod_material,nombre_material')
+        .eq('cod_cliente', codCliente)
+        .limit(200);
+      const s = san(q);
+      if (s) query = query.or(`cod_material.ilike.%${s}%,nombre_material.ilike.%${s}%`);
+      const { data, error } = await query;
+      if (error) throw error;
+      const m = new Map();
+      (data || []).forEach(r => { const c = trf(r.cod_material); if (c && !m.has(c)) m.set(c, trf(r.nombre_material)); });
+      return [...m.entries()].slice(0, 15).map(([cod, label]) => ({ cod, label: label || cod }));
+    },
+    // Lotes del cliente para un material (deduplicados).
+    async lotes(codCliente, codMaterial) {
+      const { data, error } = await supabase.from('fk_facturas')
+        .select('lote')
+        .eq('cod_cliente', codCliente).eq('cod_material', codMaterial)
+        .not('lote', 'is', null)
+        .limit(500);
+      if (error) throw error;
+      return [...new Set((data || []).map(r => trf(r.lote)).filter(Boolean))].sort();
+    },
+    // Facturas del cliente para material+lote, con su vendedor.
+    async facturasDe(codCliente, codMaterial, lote) {
+      let query = supabase.from('fk_facturas')
+        .select('no_factura,vendedor')
+        .eq('cod_cliente', codCliente).eq('cod_material', codMaterial)
+        .limit(500);
+      if (lote) query = query.eq('lote', lote);
+      const { data, error } = await query;
+      if (error) throw error;
+      const m = new Map();
+      (data || []).forEach(r => { const f = trf(r.no_factura); if (f && !m.has(f)) m.set(f, trf(r.vendedor) || ''); });
+      return [...m.entries()].map(([noFactura, vendedor]) => ({ noFactura, vendedor }));
+    },
+    // Conteo rápido de líneas de factura del cliente (índice + head:true, no trae datos).
+    async countByCliente(codCliente) {
+      const { count, error } = await supabase.from('fk_facturas')
+        .select('id', { count: 'exact', head: true })
+        .eq('cod_cliente', codCliente);
+      if (error) throw error;
+      return count || 0;
+    },
+    // ── Página para la pantalla de Maestros (búsqueda en servidor) ───────────
+    async page({ page = 0, pageSize = 50, q = '' } = {}) {
+      let query = supabase.from('fk_facturas').select('*', { count: 'estimated' });
+      const s = san(q);
+      if (s) query = query.or(`cod_cliente.ilike.%${s}%,nombre_cliente.ilike.%${s}%,no_factura.ilike.%${s}%,cod_material.ilike.%${s}%,nombre_material.ilike.%${s}%`);
+      const from = page * pageSize;
+      const { data, count, error } = await query.order('id', { ascending: false }).range(from, from + pageSize - 1);
+      if (error) throw error;
+      return { rows: (data || []).map(mapFactura), total: count || 0 };
+    },
+    // ── Escritura ────────────────────────────────────────────────────────────
+    // UPSERT por clave natural: recargas regulares sin duplicados — si la fila
+    // ya existe se actualiza, si no se inserta. La deduplicación la hace la BASE
+    // (índice único), no el navegador.
+    async insertMany(rows) {
+      const recs = rows.map(r => ({
+        cod_cliente: String(r.codCliente||"").trim(), nombre_cliente: String(r.nombreCliente||"").trim(),
+        no_factura: String(r.noFactura||"").trim(), cod_material: String(r.codMaterial||"").trim(),
+        nombre_material: String(r.nombre||"").trim(), lote: String(r.lote||"").trim(),
+        cantidad: r.cantidad, valor: r.valor,
+        vendedor: String(r.vendedor||"").trim(), facturador: String(r.facturador||"").trim(),
       }));
+      const { data, error } = await supabase.from('fk_facturas')
+        .upsert(recs, { onConflict: 'no_factura,cod_cliente,cod_material,lote' })
+        .select('id');
+      if (error) throw error;
+      return data || [];
     },
     async insert(row) {
       const rec = {
@@ -260,29 +368,11 @@ export const db = {
         cantidad: row.cantidad, valor: row.valor,
         vendedor: String(row.vendedor||"").trim(), facturador: String(row.facturador||"").trim(),
       };
-      const { data, error } = await supabase.from('fk_facturas').insert(rec).select().single();
+      const { data, error } = await supabase.from('fk_facturas')
+        .upsert(rec, { onConflict: 'no_factura,cod_cliente,cod_material,lote' })
+        .select().single();
       if (error) throw error;
-      return { id: data.id, codCliente: data.cod_cliente, nombreCliente: data.nombre_cliente,
-        noFactura: data.no_factura, codMaterial: data.cod_material, nombre: data.nombre_material,
-        lote: data.lote, cantidad: data.cantidad, valor: data.valor,
-        vendedor: data.vendedor, facturador: data.facturador };
-    },
-    async insertMany(rows) {
-      const recs = rows.map(r => ({
-        cod_cliente: String(r.codCliente||"").trim(), nombre_cliente: String(r.nombreCliente||"").trim(),
-        no_factura: String(r.noFactura||"").trim(), cod_material: String(r.codMaterial||"").trim(),
-        nombre_material: String(r.nombre||"").trim(), lote: String(r.lote||"").trim(),
-        cantidad: r.cantidad, valor: r.valor,
-        vendedor: String(r.vendedor||"").trim(), facturador: String(r.facturador||"").trim(),
-      }));
-      const { data, error } = await supabase.from('fk_facturas').insert(recs).select();
-      if (error) throw error;
-      return (data || []).map(r => ({
-        id: r.id, codCliente: r.cod_cliente, nombreCliente: r.nombre_cliente,
-        noFactura: r.no_factura, codMaterial: r.cod_material, nombre: r.nombre_material,
-        lote: r.lote, cantidad: r.cantidad, valor: r.valor,
-        vendedor: r.vendedor, facturador: r.facturador,
-      }));
+      return mapFactura(data);
     },
     async update(id, row) {
       const rec = {
@@ -294,7 +384,7 @@ export const db = {
       };
       const { data, error } = await supabase.from('fk_facturas').update(rec).eq('id', id).select().single();
       if (error) throw error;
-      return toCamel(data);
+      return mapFactura(data);
     },
     async delete(id) {
       const { error } = await supabase.from('fk_facturas').delete().eq('id', id);
