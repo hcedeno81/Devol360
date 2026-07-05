@@ -1,21 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Las credenciales se leen desde variables de entorno (NUNCA hardcodeadas en el código).
-// En StackBlitz: abre el panel ".env" y agrega:
-//   VITE_SUPABASE_URL=https://xxxxxxxx.supabase.co
-//   VITE_SUPABASE_ANON_KEY=eyJ...
-// En Vercel: Settings → Environment Variables, mismas claves.
-// En desarrollo local: crea un archivo .env en la raíz del proyecto con las mismas líneas.
-const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_KEY  = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error(
-    "Faltan variables de entorno.\n" +
-    "Agrega VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY en el panel .env de StackBlitz " +
-    "(o en el archivo .env del proyecto si trabajas en local)."
-  );
-}
+// Las credenciales se leen desde variables de entorno cuando están disponibles.
+// El anon key es público por diseño en Supabase — la seguridad real la proveen
+// las funciones SECURITY DEFINER y las políticas RLS configuradas en el servidor,
+// no el hecho de ocultar este key.
+// En Vercel/producción: configura VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY
+// en Settings → Environment Variables para sobreescribir estos valores.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+  || "https://yxsagdndsjontidgpyiv.supabase.co";
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
+  || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4c2FnZG5kc2pvbnRpZGdweWl2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMxMzEyMDUsImV4cCI6MjA5ODcwNzIwNX0.1NRImBGfupZ0hxWg90NOlzEipvtuXWHXfAwKnFTB1YQ";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
