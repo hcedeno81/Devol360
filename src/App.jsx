@@ -194,32 +194,35 @@ function PredictiveInput({value,onChange,suggestions=[],placeholder,style,disabl
   );
 }
 
-// ── CLIENT PICKER (autocompletado con selección obligatoria de la lista) ──────
-// A diferencia de PredictiveInput, este NO permite texto libre: si lo escrito
-// no coincide EXACTO con una opción, el campo queda "sin cliente" (no dispara
-// carga de facturas/productos) y se marca en rojo hasta elegir una opción real.
-function ClientPicker({value,onChange,options,placeholder,style}) {
+// ── RESTRICTED PICKER (combobox de selección obligatoria) ─────────────────────
+// Autocompleta por código o nombre, pero NUNCA acepta texto libre: si lo escrito
+// no coincide EXACTO con una opción de la lista, el campo se limpia solo al salir
+// (blur), evitando que quede un código/nombre "inventado" o mal escrito que
+// rompería el enlace con el maestro de datos (facturas, clientes, etc.).
+// displayField: qué campo de la opción se muestra/edita en el input ("label" o "cod").
+function RestrictedPicker({value,onChange,options,placeholder,style,disabled,displayField="label",emptyMsg="Sin coincidencias",invalidMsg="⚠ Debes elegir una opción de la lista."}) {
   // options: [{cod, label}]
   const [open,setOpen]=useState(false);
   const [text,setText]=useState("");
   const skipBlur=useRef(false);
+  const matchKey=displayField==="cod"?"cod":"label";
 
-  // Sincroniza el texto mostrado con el valor seleccionado (código) desde afuera
+  // Sincroniza el texto mostrado con el valor seleccionado desde afuera
   useEffect(()=>{
     const sel=options.find(o=>o.cod===value);
-    setText(sel?sel.label:"");
-  },[value,options]);
+    setText(sel?sel[matchKey]:"");
+  },[value,options,matchKey]);
 
   const norm=(v)=>(v||"").toLowerCase();
   const filtered=text
     ? options.filter(o=>norm(o.label).includes(norm(text))||norm(o.cod).includes(norm(text))).slice(0,15)
     : options.slice(0,15);
 
-  const isValidText = options.some(o=>o.label===text);
+  const isValidText = options.some(o=>o[matchKey]===text);
 
   const handleSelect=(o)=>{
     skipBlur.current=true;
-    setText(o.label);
+    setText(o[matchKey]);
     onChange(o.cod);
     setOpen(false);
     setTimeout(()=>{ skipBlur.current=false; },300);
@@ -229,7 +232,7 @@ function ClientPicker({value,onChange,options,placeholder,style}) {
     if(skipBlur.current) return;
     setOpen(false);
     // Si lo escrito no coincide exactamente con una opción válida, se limpia
-    // la selección para no arrastrar un cliente "a medias" sin facturas asociadas.
+    // para no arrastrar una selección "a medias" sin datos asociados reales.
     if(!isValidText){
       onChange("");
       setText("");
@@ -239,15 +242,16 @@ function ClientPicker({value,onChange,options,placeholder,style}) {
   return (
     <div style={{position:"relative",width:style?.width||"100%"}}>
       <input
-        style={{...style,width:"100%",boxSizing:"border-box",border:`1px solid ${value?C.accent:(text?C.danger:C.light)}`}}
+        style={{...style,width:"100%",boxSizing:"border-box",border:`1px solid ${disabled?C.light:(value?C.accent:(text?C.danger:C.light))}`}}
         value={text}
         placeholder={placeholder}
+        disabled={disabled}
         autoComplete="off"
         onChange={e=>{ setText(e.target.value); onChange(""); setOpen(true); }}
         onFocus={()=>setOpen(true)}
         onBlur={handleBlur}
       />
-      {open&&filtered.length>0&&(
+      {open&&!disabled&&filtered.length>0&&(
         <div style={{position:"absolute",zIndex:1000,background:"#fff",border:`1px solid ${C.accent}`,borderRadius:6,boxShadow:"0 4px 16px rgba(0,0,0,.15)",maxHeight:240,overflowY:"auto",width:"max-content",minWidth:"100%",top:"calc(100% + 2px)",left:0}}>
           {filtered.map(o=>(
             <div key={o.cod} style={{padding:"7px 12px",cursor:"pointer",fontSize:12,borderBottom:`1px solid ${C.light}`,background:"#fff",whiteSpace:"nowrap"}}
@@ -259,16 +263,22 @@ function ClientPicker({value,onChange,options,placeholder,style}) {
           ))}
         </div>
       )}
-      {open&&filtered.length===0&&(
+      {open&&!disabled&&filtered.length===0&&(
         <div style={{position:"absolute",zIndex:1000,background:"#fff",border:`1px solid ${C.light}`,borderRadius:6,padding:"7px 12px",fontSize:12,color:C.gray,top:"calc(100% + 2px)",left:0,width:"max-content"}}>
-          Sin coincidencias
+          {emptyMsg}
         </div>
       )}
-      {text&&!value&&!open&&(
-        <div style={{fontSize:11,color:C.danger,marginTop:2}}>⚠ Debes elegir un cliente de la lista.</div>
+      {text&&!value&&!open&&!disabled&&(
+        <div style={{fontSize:11,color:C.danger,marginTop:2}}>{invalidMsg}</div>
       )}
     </div>
   );
+}
+
+// Wrapper específico para cliente (mantiene el nombre usado en NotaForm).
+function ClientPicker({value,onChange,options,placeholder,style}) {
+  return <RestrictedPicker value={value} onChange={onChange} options={options} placeholder={placeholder} style={style}
+    displayField="label" invalidMsg="⚠ Debes elegir un cliente de la lista."/>;
 }
 
 // ── PRODUCT TABLE ─────────────────────────────────────────────────────────────
@@ -298,28 +308,29 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
   // Escalonado basado en facturas del cliente seleccionado:
   // 1) Códigos de materiales vendidos al cliente
   const facCliente=codigoCliente ? facturas.filter(f=>f.codCliente===codigoCliente) : [];
-  const codigosSug=[...new Set(facCliente.map(f=>f.codMaterial))].sort();
-  // 2) Nombres sugeridos: EXCLUSIVAMENTE desde el maestro de FACTURAS del cliente.
-  //    plotes nunca se usa para nombre/descripción — solo sirve más abajo para la fecha de caducidad del lote.
-  const nombresSug=[...new Set(
-    facCliente.filter(f=>!l.codigo||f.codMaterial===l.codigo).map(f=>f.nombre)
-  )].filter(Boolean).sort();
   // 3) Lotes: los que aparecen en facturas del cliente para ese código (deduplicados)
   const lotesEnFactura=[...new Set(facCliente.filter(f=>f.codMaterial===l.codigo).map(f=>f.lote).filter(Boolean))];
   // 4) Facturas del cliente para ese código+lote específico
   const facturasSug=[...new Set(
     facCliente.filter(f=>f.codMaterial===l.codigo&&(!l.lote||f.lote===l.lote)).map(f=>f.noFactura)
   )];
+  // 5) Opciones de producto para el combobox restringido: una por código, deduplicado.
+  const productoOptions=[...new Map(facCliente.map(f=>[f.codMaterial,f.nombre])).entries()]
+    .map(([cod,label])=>({cod,label}))
+    .sort((a,b)=>a.cod.localeCompare(b.cod));
+
   return (
     <tr style={{background:i%2===0?"#f9fafb":"#fff"}}>
       <td style={s.td}>{i+1}</td>
       {editable?(
         <>
           <td style={s.td}>
-            <PredictiveInput style={{...s.inp,width:85}} value={l.codigo}
+            <RestrictedPicker style={{...s.inp,width:85}} value={l.codigo}
+              options={productoOptions} displayField="cod"
               placeholder={codigoCliente?"Código...":"— Elige cliente —"}
               disabled={!codigoCliente}
-              suggestions={codigosSug}
+              emptyMsg="Sin productos para este cliente"
+              invalidMsg="⚠ Elige un producto de la lista."
               onChange={v=>{
                 // El nombre/descripción viene SIEMPRE del maestro de facturas del cliente.
                 // plotes nunca se usa aquí (solo aporta la fecha de caducidad al elegir lote).
@@ -328,14 +339,16 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
               }}/>
           </td>
           <td style={s.td}>
-            <PredictiveInput style={{...s.inp,width:170}} value={l.nombre}
+            <RestrictedPicker style={{...s.inp,width:170}} value={l.codigo}
+              options={productoOptions} displayField="label"
               placeholder={codigoCliente?"Nombre material...":"— Elige cliente —"}
               disabled={!codigoCliente}
-              suggestions={nombresSug}
+              emptyMsg="Sin productos para este cliente"
+              invalidMsg="⚠ Elige un producto de la lista."
               onChange={v=>{
                 // Igual criterio: el emparejamiento nombre→código se hace solo contra facturas.
-                const fac=facCliente.find(x=>(!l.codigo||x.codMaterial===l.codigo)&&x.nombre===v);
-                onChangeLine(i,{nombre:v,codigo:fac?fac.codMaterial:l.codigo,lote:"",fechaVenc:"",facturaNo:""});
+                const fac=facCliente.find(x=>x.codMaterial===v);
+                onChangeLine(i,{codigo:v,nombre:fac?fac.nombre:"",lote:"",fechaVenc:"",facturaNo:""});
               }}/>
           </td>
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`p15-${i}`} checked={l.porc15==="si"} onChange={()=>onChangeLine(i,{porc15:"si"})}/></td>
