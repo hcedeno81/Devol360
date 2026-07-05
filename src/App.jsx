@@ -93,7 +93,7 @@ const getEstadoLabel = (estado, role) => {
 
 // Facturas demo: relacionan cliente → material → lote → factura
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-const mkL    = ()=>({codigo:"",nombre:"",porc15:null,medVital:null,cantidad:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",destino:"",cantStock:"",cantDestruccion:""});
+const mkL    = ()=>({codigo:"",nombre:"",porc15:null,medVital:null,cantidad:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",cantidadVendida:"",destino:"",cantStock:"",cantDestruccion:""});
 const pad    = (arr)=>{ const r=[...arr]; while(r.length<10) r.push(mkL()); return r.slice(0,10); };
 const mkForm = ()=>({fecha:"",codigoCliente:"",nombreCliente:"",tipoDevolucion:"",codigoMotivo:"",descripcionMotivo:"",nc:false,canje:false,observacion:"",noBultos:"",lineas:pad([])});
 const fmtD   = (iso)=>{ if(!iso) return ""; const p=iso.split("-"); if(p.length!==3) return iso; return `${p[2]}/${p[1]}/${p[0]}`; };
@@ -324,7 +324,7 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
 
   const selectFactura=(v)=>{
     const row=facs.find(x=>x.noFactura===v);
-    onChangeLine(i,{facturaNo:v,vendedor:row?.vendedor||l.vendedor||""});
+    onChangeLine(i,{facturaNo:v,vendedor:row?.vendedor||l.vendedor||"",cantidadVendida:row?.cantidadVendida??l.cantidadVendida??""});
   };
 
   return (
@@ -362,7 +362,26 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`p15-${i}`} checked={l.porc15==="no"} onChange={()=>onChangeLine(i,{porc15:"no"})}/></td>
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`mv-${i}`} checked={l.medVital==="si"} onChange={()=>onChangeLine(i,{medVital:"si"})}/></td>
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`mv-${i}`} checked={l.medVital==="no"} onChange={()=>onChangeLine(i,{medVital:"no"})}/></td>
-          <td style={s.td}><input style={{...s.inp,width:60}} value={l.cantidad} onChange={e=>onChangeLine(i,{cantidad:e.target.value})}/></td>
+          <td style={s.td}>
+            <input style={{...s.inp,width:60}} value={l.cantidad} onChange={e=>onChangeLine(i,{cantidad:e.target.value})}/>
+            {(()=>{
+              const cv=parseFloat(l.cantidadVendida);
+              const cd=parseFloat(l.cantidad);
+              if(!l.facturaNo||isNaN(cv)||cv<=0) return null;
+              const pct=isNaN(cd)?0:Math.round((cd/cv)*100);
+              const excede=!isNaN(cd)&&cd>cv*0.15;
+              return (
+                <div style={{fontSize:10,marginTop:2,whiteSpace:"nowrap"}}>
+                  <span style={{color:C.gray}}>Vendido: <strong>{cv}</strong></span>
+                  {!isNaN(cd)&&cd>0&&(
+                    <span style={{marginLeft:4,fontWeight:"bold",color:excede?C.danger:C.success}}>
+                      {pct}% {excede?"⚠ >15%":"✓"}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+          </td>
           <td style={s.td}>
             <select style={{...s.inp,width:110}}
               value={l.lote}
@@ -598,12 +617,24 @@ function NotaForm({user,users,motivos,setNotas,onBack}) {
       // destino, cantStock, cantDestruccion → los llena el Inspector, no se validan aquí
     });
     if(erroresLinea.length>0) return setSubmitErr(erroresLinea[0]);
+    // ── Advertencia 15%: se registra automáticamente en Observaciones ─────────
+    const lineas15=lineasActivas.filter(l=>{
+      const cv=parseFloat(l.cantidadVendida); const cd=parseFloat(l.cantidad);
+      return !isNaN(cv)&&cv>0&&!isNaN(cd)&&cd>cv*0.15;
+    });
+    let formFinal={...form};
+    if(lineas15.length>0){
+      const nota15=lineas15.map(l=>`${l.nombre||l.codigo} (Factura ${l.facturaNo}): devuelve ${l.cantidad} de ${l.cantidadVendida} (${Math.round((parseFloat(l.cantidad)/parseFloat(l.cantidadVendida))*100)}%)`).join("; ");
+      const prefijo=`⚠ Supera 15%: ${nota15}`;
+      // Agrega la advertencia al inicio de la observación existente, separada por " | " si ya había texto.
+      formFinal={...formFinal,observacion:prefijo+(form.observacion?` | ${form.observacion}`:"")};
+    }
     setSubmitErr("");
     const rrvv=users.find(u=>u.id===parseInt(asig));
     setGuardando(true);
     try{
       const nuevaNota=await db.notas.insert({
-        form:cloneForm(form),
+        form:cloneForm(formFinal),
         tipoProducto,ciudad,
         asignadoA:parseInt(asig),rrvvNombre:rrvv?.name,
         creadoPor:user.id,creadoPorNombre:user.name,
