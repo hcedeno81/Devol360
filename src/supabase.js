@@ -43,37 +43,84 @@ async function fetchAll(query, pageSize = 1000) {
 }
 
 export const db = {
-  users: {
-    async list() {
-      const data = await fetchAll((f,t) => supabase.from('fk_users').select('*').order('id').range(f,t));
-      return toCamel(data);
-    },
-    async insert(user) {
-      const { data, error } = await supabase.from('fk_users').insert(toSnake(user)).select().single();
+  // ── AUTENTICACIÓN ─────────────────────────────────────────────────────────
+  // El login y el cambio de contraseña se ejecutan DENTRO de la base de datos
+  // (funciones SECURITY DEFINER con bcrypt). Las contraseñas y sus hashes
+  // nunca viajan al navegador.
+  auth: {
+    // Devuelve el usuario (sin hash) si usuario+contraseña+activo son válidos; null si no.
+    async login(username, password) {
+      const { data, error } = await supabase.rpc('fn_login', { p_username: username, p_password: password });
       if (error) throw error;
-      return toCamel(data);
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) return null;
+      return {
+        id: row.id, username: row.username, role: row.role, name: row.name,
+        email: row.email, active: row.active, mustChangePassword: row.must_change_password,
+      };
     },
-    async update(id, patch) {
-      const { data, error } = await supabase.from('fk_users').update(toSnake(patch)).eq('id', id).select().single();
+    // Cambio de contraseña por el propio usuario (exige la contraseña actual).
+    async changePassword(username, oldPassword, newPassword) {
+      const { data, error } = await supabase.rpc('fn_change_password', {
+        p_username: username, p_old: oldPassword, p_new: newPassword,
+      });
       if (error) throw error;
-      return toCamel(data);
+      return data === true;
     },
   },
 
-  invites: {
+  users: {
+    // Lista desde la vista pública: NUNCA incluye contraseñas ni hashes.
     async list() {
-      const data = await fetchAll((f,t) => supabase.from('fk_invites').select('*').order('id').range(f,t));
-      return toCamel(data);
+      const data = await fetchAll((f,t) => supabase.from('fk_users_public').select('*').order('id').range(f,t));
+      return (data || []).map(r => ({
+        id: r.id, username: r.username, role: r.role, name: r.name,
+        email: r.email, active: r.active, mustChangePassword: r.must_change_password,
+      }));
     },
-    async insert(invite) {
-      const { data, error } = await supabase.from('fk_invites').insert(toSnake(invite)).select().single();
+    // Crear usuario (solo admin): asigna clave inicial; el usuario deberá cambiarla al ingresar.
+    async create(adminCreds, { username, password, role, name, email }) {
+      const { data, error } = await supabase.rpc('fn_admin_create_user', {
+        p_admin_user: adminCreds.username, p_admin_pass: adminCreds.password,
+        p_username: username, p_password: password, p_role: role, p_name: name, p_email: email,
+      });
       if (error) throw error;
-      return toCamel(data);
+      const row = Array.isArray(data) ? data[0] : data;
+      return {
+        id: row.id, username: row.username, role: row.role, name: row.name,
+        email: row.email, active: row.active, mustChangePassword: row.must_change_password,
+      };
     },
-    async update(id, patch) {
-      const { data, error } = await supabase.from('fk_invites').update(toSnake(patch)).eq('id', id).select().single();
+    // Resetear contraseña (solo admin): asigna una temporal sin poder ver la anterior.
+    async resetPassword(adminCreds, targetId, newPassword) {
+      const { data, error } = await supabase.rpc('fn_admin_reset_password', {
+        p_admin_user: adminCreds.username, p_admin_pass: adminCreds.password,
+        p_target_id: targetId, p_new_password: newPassword,
+      });
       if (error) throw error;
-      return toCamel(data);
+      return data === true;
+    },
+    // Activar/desactivar acceso (solo admin).
+    async setActive(adminCreds, targetId, active) {
+      const { data, error } = await supabase.rpc('fn_admin_set_active', {
+        p_admin_user: adminCreds.username, p_admin_pass: adminCreds.password,
+        p_target_id: targetId, p_active: active,
+      });
+      if (error) throw error;
+      return data === true;
+    },
+    // Editar nombre/correo/rol (solo admin). Nunca la contraseña.
+    async adminUpdate(adminCreds, targetId, { name, email, role }) {
+      const { data, error } = await supabase.rpc('fn_admin_update_user', {
+        p_admin_user: adminCreds.username, p_admin_pass: adminCreds.password,
+        p_target_id: targetId, p_name: name, p_email: email, p_role: role,
+      });
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      return {
+        id: row.id, username: row.username, role: row.role, name: row.name,
+        email: row.email, active: row.active, mustChangePassword: row.must_change_password,
+      };
     },
   },
 
