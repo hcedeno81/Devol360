@@ -642,10 +642,25 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
         <div style={{...s.row,marginTop:10}}>
           <div style={{flex:"1 1 200px"}}><label style={s.lbl}>Tipo Devolución *</label>
             <div style={{display:"flex",gap:16,marginTop:4}}>{["Comercial","Institucional"].map(t=><label key={t} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer"}}><input type="radio" name="tipo" checked={form.tipoDevolucion===t} onChange={()=>sf("tipoDevolucion",t)}/>{t}</label>)}</div></div>
-          <div style={{flex:"0 0 140px"}}><label style={s.lbl}>Cód. Motivo</label>
-            <PredictiveInput style={s.inp} value={form.codigoMotivo} placeholder="VEN" suggestions={motivos.map(m=>m.codigo)} onChange={v=>{ const m=motivos.find(x=>x.codigo===v); sf("codigoMotivo",v); if(m) sf("descripcionMotivo",m.descripcion); }}/></div>
-          <div style={{flex:"2 1 160px"}}><label style={s.lbl}>Descripción Motivo</label>
-            <PredictiveInput style={s.inp} value={form.descripcionMotivo} placeholder="Seleccionar..." suggestions={motivos.map(m=>m.descripcion)} onChange={v=>{ const m=motivos.find(x=>x.descripcion===v); sf("descripcionMotivo",v); if(m) sf("codigoMotivo",m.codigo); }}/></div>
+          {(()=>{
+            // Opciones de motivo: {cod=codigo, label=descripcion} — RestrictedPicker igual que cliente/producto.
+            const motivoOptions=motivos.map(m=>({cod:m.codigo,label:m.descripcion})).sort((a,b)=>a.cod.localeCompare(b.cod));
+            const selMotivo=form.codigoMotivo;
+            return (<>
+              <div style={{flex:"0 0 150px"}}>
+                <label style={s.lbl}>Cód. Motivo</label>
+                <RestrictedPicker style={s.inp} value={selMotivo} options={motivoOptions} displayField="cod"
+                  placeholder="VEN" emptyMsg="Sin coincidencias" invalidMsg="⚠ Elige un motivo de la lista."
+                  onChange={v=>{ const m=motivos.find(x=>x.codigo===v); sf("codigoMotivo",v); sf("descripcionMotivo",m?m.descripcion:""); }}/>
+              </div>
+              <div style={{flex:"2 1 200px"}}>
+                <label style={s.lbl}>Descripción Motivo</label>
+                <RestrictedPicker style={s.inp} value={selMotivo} options={motivoOptions} displayField="label"
+                  placeholder="Seleccionar…" emptyMsg="Sin coincidencias" invalidMsg="⚠ Elige un motivo de la lista."
+                  onChange={v=>{ const m=motivos.find(x=>x.codigo===v); sf("codigoMotivo",v); sf("descripcionMotivo",m?m.descripcion:""); }}/>
+              </div>
+            </>);
+          })()}
           <div style={{flex:"0 0 120px"}}><label style={s.lbl}>Nº Bultos</label><input style={s.inp} value={form.noBultos} onChange={e=>sf("noBultos",e.target.value)}/></div>
         </div>
 
@@ -945,6 +960,7 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
   const [tab,setTab]=useState("motivos");
   const [modal,setModal]=useState(null); const [form,setForm]=useState({}); const [err,setErr]=useState("");
   const [importResult,setImportResult]=useState(null);
+  const [importing,setImporting]=useState(null); // {fase,pct,total,done} mientras trabaja
   const [confirmDel,setConfirmDel]=useState(null); // {id, tabName, label}
   const [confirmDelAll,setConfirmDelAll]=useState(false);
   const M=MASTERS[tab]; const data=stores[tab][0];
@@ -1003,7 +1019,7 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
     }catch(e){ notify("Error al descargar plantilla: "+e.message); }
   };
 
-  // Procesa filas (array de arrays, fila 0 = encabezados) y carga en UN solo setState.
+  // Procesa filas (array de arrays, fila 0 = encabezados) y carga en lotes reportando progreso.
   const processRows=async(rowsAoa,importTab)=>{
     const Mm=MASTERS[importTab];
     if(!rowsAoa||rowsAoa.length<2){ setImportResult({ok:0,errors:["Archivo vacío o sin filas de datos."]}); return; }
@@ -1013,26 +1029,37 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
     if(missing.length){ setImportResult({ok:0,errors:[`Columnas faltantes: ${missing.join(", ")}. La primera fila debe tener exactamente: ${Mm.cols.join(", ")}. (Usa la plantilla descargada.)`]}); return; }
     const setD=stores[importTab][1]; const d=stores[importTab][0];
     const seen=new Set(d.map(x=>Mm.keyOf(x)));
-    const errors=[]; const newItems=[]; let seq=0;
-    rowsAoa.slice(1).forEach((cols,li)=>{
-      if(!cols||cols.every(c=>String(c==null?"":c).trim()==="")) return;
+    const errors=[]; const newItems=[];
+    const dataRows=rowsAoa.slice(1).filter(cols=>cols&&!cols.every(c=>String(c==null?"":c).trim()===""));
+    const total=dataRows.length;
+    // ── Fase 1: validar filas ─────────────────────────────────────────────────
+    setImporting({fase:"Validando filas…",pct:0,total,done:0});
+    for(let li=0;li<dataRows.length;li++){
+      const cols=dataRows[li];
       const rec={}; Mm.fields.forEach(([fk],i)=>{ rec[fk]=String(cols[idx[i]]==null?"":cols[idx[i]]).replace(/"/g,"").trim(); });
-      // Solo validar campos obligatorios (marcados con " *" en su label)
       const requiredFields=Mm.fields.filter(([,label])=>label.includes(" *")).map(([fk])=>fk);
       const missingFields=requiredFields.filter(fk=>!rec[fk]);
-      if(missingFields.length){ errors.push(`Fila ${li+2}: campos obligatorios vacíos: ${missingFields.join(", ")}.`); return; }
-      if(Mm.dateField){ const iso=toISO(rec[Mm.dateField]); if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)){ errors.push(`Fila ${li+2}: fecha inválida "${rec[Mm.dateField]}" (usa AAAA-MM-DD o DD/MM/AAAA).`); return; } rec[Mm.dateField]=iso; }
+      if(missingFields.length){ errors.push(`Fila ${li+2}: campos obligatorios vacíos: ${missingFields.join(", ")}.`); continue; }
+      if(Mm.dateField){ const iso=toISO(rec[Mm.dateField]); if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)){ errors.push(`Fila ${li+2}: fecha inválida "${rec[Mm.dateField]}" (usa AAAA-MM-DD o DD/MM/AAAA).`); continue; } rec[Mm.dateField]=iso; }
       const k=Mm.keyOf(rec);
-      if(seen.has(k)){ errors.push(`Fila ${li+2}: duplicado (${k}).`); return; }
-      seen.add(k); newItems.push({...rec}); seq++;
-    });
-    if(newItems.length){
-      try{
-        const inserted=await db[importTab].insertMany(newItems);
-        setD(arr=>[...arr,...(inserted||[])]);
-      }catch(e){ errors.push("Error al guardar en BD: "+e.message); }
+      if(seen.has(k)){ errors.push(`Fila ${li+2}: duplicado (${k}).`); continue; }
+      seen.add(k); newItems.push({...rec});
+      // Actualizar progreso de validación cada 100 filas para no saturar renders
+      if(li%100===0) setImporting({fase:"Validando filas…",pct:Math.round((li/total)*50),total,done:li});
     }
-    setImportResult({ok:newItems.length,errors,total:rowsAoa.length-1});
+    // ── Fase 2: insertar en lotes de 500 ─────────────────────────────────────
+    const BATCH=500; let inserted=0;
+    for(let i=0;i<newItems.length;i+=BATCH){
+      const lote=newItems.slice(i,i+BATCH);
+      setImporting({fase:`Guardando en base de datos… (${Math.min(i+BATCH,newItems.length)} de ${newItems.length})`,pct:50+Math.round((i/newItems.length)*50),total,done:inserted});
+      try{
+        const saved=await db[importTab].insertMany(lote);
+        setD(arr=>[...arr,...(saved||[])]);
+        inserted+=lote.length;
+      }catch(e){ errors.push(`Lote ${Math.floor(i/BATCH)+1}: error al guardar — ${e.message}`); }
+    }
+    setImporting(null);
+    setImportResult({ok:inserted,errors,total});
   };
 
   // Acepta Excel (.xlsx/.xls) y CSV/TXT (coma, ; o tabulación).
@@ -1074,12 +1101,27 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
             <div><div style={{fontWeight:"bold",color:"#166534",fontSize:13}}>📥 Carga masiva desde Excel / CSV</div>
             <div style={{fontSize:11,color:"#166534"}}>Descarga la plantilla, reemplaza las filas de ejemplo con tus datos y súbela. Acepta Excel (.xlsx) y CSV.</div></div>
             <div style={{display:"flex",gap:8}}>
-              <button style={s.btn("#166534")} onClick={downloadTemplate}>⬇️ Descargar plantilla</button>
-              <label style={{...s.btn("#0d9488"),cursor:"pointer",display:"inline-flex",alignItems:"center"}}>📤 Subir archivo<input type="file" accept=".xlsx,.xls,.csv,.txt" style={{display:"none"}} onChange={handleFile}/></label>
+              <button style={s.btn("#166534")} onClick={downloadTemplate} disabled={!!importing}>⬇️ Descargar plantilla</button>
+              <label style={{...s.btn(importing?"#9ca3af":"#0d9488"),cursor:importing?"not-allowed":"pointer",display:"inline-flex",alignItems:"center",opacity:importing?0.6:1}}>
+                {importing?"⏳ Importando...":"📤 Subir archivo"}
+                <input type="file" accept=".xlsx,.xls,.csv,.txt" style={{display:"none"}} onChange={handleFile} disabled={!!importing}/>
+              </label>
               {data.length>0&&<button style={s.btn(C.danger)} onClick={()=>setConfirmDelAll(true)}>🗑️ Eliminar todos</button>}
             </div>
           </div>
-          {importResult&&(
+          {importing&&(
+            <div style={{marginTop:12,background:"#eff6ff",border:`1px solid #bfdbfe`,borderRadius:8,padding:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:"bold",color:C.primary}}>⏳ {importing.fase}</span>
+                <span style={{fontSize:11,color:C.gray}}>{importing.pct}%</span>
+              </div>
+              <div style={{background:"#dbeafe",borderRadius:99,height:8,overflow:"hidden"}}>
+                <div style={{height:"100%",borderRadius:99,background:C.primary,width:`${importing.pct}%`,transition:"width .25s ease"}}/>
+              </div>
+              {importing.total>0&&<div style={{fontSize:11,color:C.gray,marginTop:4}}>{importing.done} de {importing.total} filas procesadas</div>}
+            </div>
+          )}
+          {!importing&&importResult&&(
             <div style={{marginTop:10,background:importResult.ok>0?"#f0fdf4":"#fef2f2",border:`1px solid ${importResult.ok>0?"#bbf7d0":"#fecaca"}`,borderRadius:6,padding:10}}>
               {importResult.ok>0&&<div style={{color:"#166534",fontWeight:"bold",fontSize:13,marginBottom:4}}>✅ {importResult.ok} de {importResult.total||"?"} filas importadas correctamente.</div>}
               {importResult.errors.map((e,i)=><div key={i} style={{fontSize:11,color:C.danger}}>• {e}</div>)}
