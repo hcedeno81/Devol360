@@ -5,7 +5,6 @@ import { db } from "./supabase";
 const ROLES = [
   { value:"admin",      label:"Administrador",         desc:"Acceso total + gestión de usuarios",      color:"#dc2626" },
   { value:"rrvv",       label:"RRVV",                  desc:"Crea notas y confirma/rechaza correcciones", color:"#003087" },
-  { value:"asistente",  label:"Asistente",              desc:"Crea notas a nombre de un RRVV",          color:"#7c3aed" },
   { value:"bodeguero",  label:"Bodeguero",              desc:"Revisa, registra facturas y aprueba",     color:"#0891b2" },
   { value:"inspector",  label:"Inspector de Calidad",   desc:"Define destinos Stock/Destrucción",       color:"#0d9488" },
   { value:"facturador", label:"Facturador",             desc:"Corrige facturas y exporta a SAP",        color:"#d97706" },
@@ -31,16 +30,14 @@ const STL = {
 };
 
 // Carpetas por rol (SIN "todas").
-// rrvv/asistente: solo En Bodega, Corregidas y Aprobadas en SAP.
+// rrvv: solo En Bodega, Corregidas y Aprobadas en SAP.
 //   La visibilidad es por propietario (ver visibleNotas): cada RRVV ve solo las notas
-//   asignadas a él (asignadoA) y cada Asistente solo las que él creó (creadoPor),
-//   por lo que con varios usuarios cada uno queda aislado del resto.
+//   asignadas a él (asignadoA), por lo que con varios RRVV cada uno queda aislado.
 //   Nota: mientras una nota está En Calidad / En Facturación / Enviada a SAP no aparece
 //   en ninguna de sus 3 carpetas; reaparece al llegar a "Aprobada en SAP".
 const ROLE_STATES = {
   admin:      ["en_bodega","corregida","en_calidad","en_facturacion","enviada_sap","aprobada_sap"],
   rrvv:       ["en_bodega","corregida","aprobada_sap"],
-  asistente:  ["en_bodega","corregida","aprobada_sap"],
   bodeguero:  ["en_bodega","corregida","en_calidad","en_facturacion","aprobada_sap"],
   inspector:  ["en_calidad"],
   facturador: ["en_facturacion","enviada_sap","aprobada_sap"],
@@ -59,7 +56,6 @@ const TAB_LABELS = {
 const getTabLabel = (k, role) => {
   if(k==="corregida" && role==="bodeguero") return "🔄 Rechazadas por RRVV";
   if(k==="en_bodega" && role==="rrvv")      return "📦 En Bodega";
-  if(k==="en_bodega" && role==="asistente") return "📦 En Bodega";
   return TAB_LABELS[k] || k;
 };
 
@@ -136,7 +132,6 @@ const visibleNotas=(notas,user)=>{
   if(!user) return [];
   if(user.role==="admin") return notas;
   if(user.role==="rrvv") return notas.filter(n=>n.asignadoA===user.id);
-  if(user.role==="asistente") return notas.filter(n=>n.creadoPor===user.id);
   const states=ROLE_STATES[user.role]||[];
   return notas.filter(n=>states.includes(n.estado));
 };
@@ -511,11 +506,10 @@ function Login({onLogin}) {
 
 // ── NOTA FORM ─────────────────────────────────────────────────────────────────
 function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
-  const canAssign=user.role==="asistente";
   const rrvvList=users.filter(u=>u.role==="rrvv"&&u.active);
   const hoy=new Date().toISOString().split("T")[0];
   const [form,setForm]=useState({...mkForm(),fecha:hoy});
-  const [asig,setAsig]=useState(canAssign?"":String(user.id));
+  const [asig,setAsig]=useState(String(user.id));
   const [submitErr,setSubmitErr]=useState("");
   const [guardando,setGuardando]=useState(false);
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
@@ -587,16 +581,6 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
             <div style={{fontWeight:"bold",color:C.primary,fontSize:13}}>Se asignará al crear</div>
           </div>
         </div>
-
-        {canAssign&&(
-          <div style={{...s.card,background:"#eef2ff",marginBottom:14}}>
-            <div style={{fontWeight:"bold",color:C.purple,marginBottom:8}}>👤 Crear a nombre de RRVV</div>
-            <select style={{...s.inp,maxWidth:300}} value={asig} onChange={e=>setAsig(e.target.value)}>
-              <option value="">Seleccionar RRVV...</option>
-              {rrvvList.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-          </div>
-        )}
 
         <div style={s.row}>
           <div style={{flex:"0 0 180px"}}>
@@ -687,12 +671,16 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
 
 // ── NOTA DETAIL ───────────────────────────────────────────────────────────────
 function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
-  const workForm=nota.modActual||nota.form;
+  // El bodeguero siempre parte desde los datos originales del RRVV (nota.form),
+  // no desde una corrección intermedia anterior. Los demás roles siguen usando
+  // modActual cuando existe (Inspector, Facturador necesitan ver el estado actual).
+  const rol=user.role;
+  const isBodeguero = rol==="bodeguero";
+  const workForm = isBodeguero ? nota.form : (nota.modActual||nota.form);
   const [mf,setMf]=useState(cloneForm(workForm));
   const [com,setCom]=useState("");
   const [motivoRechazo,setMotivoRechazo]=useState("");
   const [showRechazo,setShowRechazo]=useState(false);
-  const rol=user.role;
 
   const changeLine=useCallback((i,patch)=>setMf(f=>{ const ls=[...f.lineas]; ls[i]={...ls[i],...patch}; return{...f,lineas:ls}; }),[]);
   const push=(a)=>({accion:`${a}${com?": "+com:""}`,usuario:user.name,fecha:new Date().toLocaleString()});
@@ -703,7 +691,7 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
     }catch(e){ notify("Error al actualizar nota: "+e.message); }
   };
 
-  const isBod    = rol==="bodeguero";
+  const isBod    = isBodeguero;
   const isRRVV   = (rol==="rrvv"&&user.id===nota.asignadoA)||rol==="admin";
   const isCal    = rol==="inspector";
   const isFac    = rol==="facturador";
@@ -741,12 +729,14 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
   const f=nota.form;
   const dispForm=isEditing?mf:(nota.modActual||nota.form);
 
-  // Alertas de estado — sin HTML inyectado (el motivoRechazo del usuario se renderiza como texto plano)
+  // Alertas de estado — solo se muestran cuando aportan información que no aparece en otro lugar.
+  // La alerta de en_bodega solo aparece si el RRVV rechazó (roja); sin rechazo no hay aviso.
+  // La alerta de corregida se elimina: el panel de cambios del bodeguero ya es suficiente.
   const alertas={
     en_bodega: nota.motivoRechazo
       ? {bg:"#fef2f2",border:"#fecaca",txt:"#991b1b",jsx:<span>🔴 <strong>RRVV rechazó la corrección anterior:</strong> "{nota.motivoRechazo}". Revisa y realiza una nueva corrección o aprueba directamente.</span>}
-      : {bg:"#fffbeb",border:"#fde68a",txt:"#92400e",jsx:<span>⚠️ Revisa los datos, registra las facturas por línea. <b>Corregir</b> regresa al RRVV con detalle de cambios. <b>Aprobar</b> envía a Inspector de Calidad.</span>},
-    corregida:{bg:"#eff6ff",border:"#bfdbfe",txt:"#1e40af",jsx:<span>ℹ️ El bodeguero realizó correcciones. Revisa los cambios y <b>Confirma</b> para que regrese a bodega, o <b>Rechaza</b> indicando el motivo.</span>},
+      : null,
+    corregida: null,
     en_calidad:{bg:"#f0fdf4",border:"#bbf7d0",txt:"#166534",jsx:<span>🔍 Define las cantidades de Stock y Destrucción por línea. La suma debe ser igual a la cantidad devuelta.</span>},
     en_facturacion:{bg:"#fffbeb",border:"#fde68a",txt:"#92400e",jsx:<span>💰 Verifica y corrige los números de factura por línea si es necesario. Luego <b>Exporta a SAP</b>.</span>},
     enviada_sap:{bg:"#f0fdf4",border:"#bbf7d0",txt:"#166534",jsx:<span>📤 Nota enviada a SAP. Una vez aprobada en el sistema SAP, confirma aquí para actualizar el estado.</span>},
@@ -1483,7 +1473,7 @@ export default function App() {
     })();
   },[]);
 
-  const canCreate=["rrvv","asistente"].includes(user?.role);
+  const canCreate=user?.role==="rrvv";
 
   const roleStates=user?(ROLE_STATES[user.role]||Object.keys(STC)):[];
   const NAV=roleStates.map(k=>({k, l:getTabLabel(k,user?.role)}));
