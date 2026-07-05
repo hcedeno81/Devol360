@@ -62,9 +62,22 @@ const TAB_LABELS = {
 };
 
 const getTabLabel = (k, role) => {
-  if(k==="corregida" && isBodegueroRole(role)) return "🔄 Rechazadas por RRVV";
+  if(k==="corregida" && isBodegueroRole(role)) return "🔄 En revisión de RRVV";
   if(k==="en_bodega" && role==="rrvv")      return "📦 En Bodega";
   return TAB_LABELS[k] || k;
+};
+
+// Etiqueta del badge de ESTADO, ajustada a la perspectiva de cada rol.
+// El estado "corregida" significa: el bodeguero corrigió y espera respuesta del RRVV.
+//  - Para el bodeguero: "En revisión de RRVV" (él ya hizo su parte, espera al RRVV).
+//  - Para el RRVV: "Pendiente de tu revisión" (le toca confirmar o rechazar).
+//  - Para admin u otros: el texto neutro por defecto.
+const getEstadoLabel = (estado, role) => {
+  if(estado==="corregida"){
+    if(isBodegueroRole(role)) return "En revisión de RRVV";
+    if(role==="rrvv")         return "Pendiente de tu revisión";
+  }
+  return STL[estado] || estado;
 };
 
 // ── INIT DATA ─────────────────────────────────────────────────────────────────
@@ -830,7 +843,7 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
           <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
             <span style={s.bdg(nota.tipoProducto==="controlado"?C.danger:C.gray)}>{nota.tipoProducto==="controlado"?"🔒 Controlado":"📦 Normal"}</span>
             <span style={s.bdg(nota.ciudad==="quito"?C.accent:"#2563eb")}>{nota.ciudad==="quito"?"🏔️ Quito":"🌴 Guayaquil"}</span>
-            <span style={s.bdg(STC[nota.estado]||C.gray)}>{STL[nota.estado]||nota.estado}</span>
+            <span style={s.bdg(STC[nota.estado]||C.gray)}>{getEstadoLabel(nota.estado,user.role)}</span>
           </div>
         </div>
 
@@ -1657,7 +1670,7 @@ export default function App() {
                         return vends.length>0?vends.join(", "):n.rrvvNombre;
                       })():n.rrvvNombre}</td>
                     <td style={s.td}>{n.creadoPorNombre}</td>
-                    <td style={s.td}><span style={s.bdg(STC[n.estado]||C.gray)}>{STL[n.estado]||TAB_LABELS[n.estado]||n.estado}</span></td>
+                    <td style={s.td}><span style={s.bdg(STC[n.estado]||C.gray)}>{getEstadoLabel(n.estado,user.role)}</span></td>
                     <td style={s.td}><button style={s.btn(C.accent,true)} onClick={()=>openNota(n.id)}>Ver</button></td>
                   </tr>
                 ))}</tbody>
