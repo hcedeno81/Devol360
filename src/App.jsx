@@ -64,15 +64,9 @@ const getTabLabel = (k, role) => {
 };
 
 // ── INIT DATA ─────────────────────────────────────────────────────────────────
-const INIT_USERS = [
-  {id:1,username:"admin",     password:"admin123",  role:"admin",      name:"Administrador",   email:"admin@fk.com",  active:true,confirmed:true},
-  {id:2,username:"carlos",    password:"rrvv123",   role:"rrvv",       name:"Carlos Pérez",    email:"carlos@fk.com", active:true,confirmed:true},
-  {id:3,username:"ana",       password:"asist123",  role:"asistente",  name:"Ana Asistente",   email:"ana@fk.com",    active:true,confirmed:true},
-  {id:4,username:"juan",      password:"bodega123", role:"bodeguero",  name:"Juan Bodega",     email:"juan@fk.com",   active:true,confirmed:true},
-  {id:5,username:"inspector", password:"cal123",    role:"inspector",  name:"Pedro Calidad",   email:"pedro@fk.com",  active:true,confirmed:true},
-  {id:6,username:"factura",   password:"fac123",    role:"facturador", name:"Luis Facturador", email:"luis@fk.com",   active:true,confirmed:true},
-  {id:7,username:"gerente",   password:"ger123",    role:"gerente",    name:"Sofia Gerente",   email:"sofia@fk.com",  active:true,confirmed:true},
-];
+// Los usuarios se gestionan exclusivamente en Supabase (tabla fk_users, protegida
+// por RLS). El usuario administrador inicial se crea con el script security_setup.sql.
+// NUNCA se incluyen credenciales en el código fuente.
 // Maestro único Producto-Lote.
 // Clave de deduplicación: lote + codigo (un mismo nº de lote puede existir en distintos materiales).
 
@@ -83,7 +77,6 @@ const mkL    = ()=>({codigo:"",nombre:"",porc15:null,medVital:null,cantidad:"",l
 const pad    = (arr)=>{ const r=[...arr]; while(r.length<10) r.push(mkL()); return r.slice(0,10); };
 const mkForm = ()=>({fecha:"",codigoCliente:"",nombreCliente:"",tipoDevolucion:"",codigoMotivo:"",descripcionMotivo:"",nc:false,canje:false,observacion:"",noBultos:"",lineas:pad([])});
 const fmtD   = (iso)=>{ if(!iso) return ""; const p=iso.split("-"); if(p.length!==3) return iso; return `${p[2]}/${p[1]}/${p[0]}`; };
-const genCode= ()=>Math.random().toString(36).substring(2,10).toUpperCase();
 const cloneForm=(f)=>({...f,lineas:f.lineas.map(l=>({...l}))});
 
 // Normaliza una fecha (DD/MM/AAAA, AAAA-MM-DD, DD-MM-AAAA...) a ISO AAAA-MM-DD.
@@ -437,43 +430,79 @@ function ProductRows({lineas,onChangeLine,editable,calEditable,facEditable,plote
 }
 
 // ── LOGIN ─────────────────────────────────────────────────────────────────────
-function Login({users,onLogin,invites,onActivate}) {
-  const [mode,setMode]=useState("login");
-  const [u,setU]=useState(""); const [p,setP]=useState(""); const [err,setErr]=useState("");
-  const [code,setCode]=useState(""); const [invite,setInvite]=useState(null);
-  const [af,setAf]=useState({username:"",password:"",password2:""}); const [aerr,setAerr]=useState("");
-  const doLogin=()=>{ const usr=users.find(x=>x.username===u&&x.password===p&&x.active&&x.confirmed); if(usr) onLogin(usr); else setErr("Usuario/contraseña incorrectos."); };
-  const doCode=()=>{ const inv=invites.find(i=>i.code===code.trim().toUpperCase()&&i.status==="pending"); if(!inv) return setAerr("Código inválido."); setInvite(inv); setAerr(""); };
-  const doActivate=()=>{ if(!af.username||!af.password) return setAerr("Completa todos los campos."); if(af.password!==af.password2) return setAerr("Contraseñas no coinciden."); if(users.find(x=>x.username===af.username)) return setAerr("Usuario ya existe."); onActivate(invite,af.username,af.password); setMode("login"); setCode(""); setInvite(null); };
+// La verificación de credenciales ocurre en el servidor (fn_login, bcrypt).
+// Si el usuario tiene must_change_password (primer ingreso o reset del admin),
+// se le obliga a definir una contraseña nueva antes de entrar al sistema.
+function Login({onLogin}) {
+  const [u,setU]=useState(""); const [p,setP]=useState("");
+  const [err,setErr]=useState(""); const [loading,setLoading]=useState(false);
+  const [mustChange,setMustChange]=useState(null); // {usr, oldPass}
+  const [np,setNp]=useState(""); const [np2,setNp2]=useState("");
+
+  const doLogin=async()=>{
+    if(loading) return;
+    if(!u.trim()||!p) return setErr("Ingresa usuario y contraseña.");
+    setErr(""); setLoading(true);
+    try{
+      const usr=await db.auth.login(u.trim(),p);
+      if(!usr){ setErr("Usuario o contraseña incorrectos, o cuenta inactiva."); return; }
+      if(usr.mustChangePassword){ setMustChange({usr,oldPass:p}); return; }
+      onLogin({...usr,_pw:p});
+    }catch(e){ setErr("Error de conexión: "+e.message); }
+    finally{ setLoading(false); }
+  };
+
+  const doChange=async()=>{
+    if(loading) return;
+    if(np.length<8)              return setErr("La nueva contraseña debe tener al menos 8 caracteres.");
+    if(np!==np2)                 return setErr("Las contraseñas no coinciden.");
+    if(np===mustChange.oldPass)  return setErr("La nueva contraseña no puede ser igual a la temporal.");
+    setErr(""); setLoading(true);
+    try{
+      const ok=await db.auth.changePassword(mustChange.usr.username,mustChange.oldPass,np);
+      if(!ok){ setErr("No se pudo cambiar la contraseña. Intenta de nuevo."); return; }
+      onLogin({...mustChange.usr,mustChangePassword:false,_pw:np});
+    }catch(e){ setErr("Error: "+e.message); }
+    finally{ setLoading(false); }
+  };
+
   return (
     <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{...s.card,width:370,textAlign:"center"}}>
         <div style={{color:C.primary,fontWeight:"bold",fontSize:22,marginBottom:4}}>FRESENIUS KABI</div>
-        <div style={{color:C.gray,fontSize:13,marginBottom:16}}>Sistema de Gestión de Devoluciones</div>
-        <div style={{display:"flex",borderRadius:6,overflow:"hidden",border:`1px solid ${C.light}`,marginBottom:20}}>
-          {[["login","🔐 Ingresar"],["activate","✉️ Activar cuenta"]].map(([m,l])=>(
-            <button key={m} onClick={()=>{setMode(m);setErr("");setAerr("");setInvite(null);}} style={{flex:1,padding:8,border:"none",background:mode===m?C.primary:"#fff",color:mode===m?"#fff":C.gray,cursor:"pointer",fontSize:12,fontWeight:mode===m?"bold":"normal"}}>{l}</button>
-          ))}
-        </div>
-        {mode==="login"?(
-          <><label style={s.lbl}>Usuario</label><input style={{...s.inp,marginBottom:10}} value={u} onChange={e=>setU(e.target.value)}/>
-          <label style={s.lbl}>Contraseña</label><input style={{...s.inp,marginBottom:14}} type="password" value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/>
-          {err&&<div style={{color:C.danger,fontSize:12,marginBottom:8}}>{err}</div>}
-          <button style={{...s.btn(),width:"100%"}} onClick={doLogin}>Ingresar</button>
-          <div style={{marginTop:12,fontSize:11,color:C.gray,lineHeight:2}}>admin/admin123 · carlos/rrvv123 · ana/asist123<br/>juan/bodega123 · inspector/cal123 · factura/fac123 · gerente/ger123</div></>
-        ):!invite?(
-          <><div style={{fontSize:13,color:C.gray,marginBottom:12}}>Ingresa tu código de invitación.</div>
-          <input style={{...s.inp,marginBottom:10,textTransform:"uppercase",letterSpacing:2,textAlign:"center",fontSize:15}} value={code} onChange={e=>setCode(e.target.value)} placeholder="XXXXXXXX"/>
-          {aerr&&<div style={{color:C.danger,fontSize:12,marginBottom:8}}>{aerr}</div>}
-          <button style={{...s.btn(),width:"100%"}} onClick={doCode}>Verificar</button></>
+        <div style={{color:C.gray,fontSize:13,marginBottom:20}}>Sistema de Gestión de Devoluciones</div>
+        {!mustChange?(
+          <>
+            <label style={s.lbl}>Usuario</label>
+            <input style={{...s.inp,marginBottom:10}} value={u} autoComplete="username" onChange={e=>setU(e.target.value)}/>
+            <label style={s.lbl}>Contraseña</label>
+            <input style={{...s.inp,marginBottom:14}} type="password" autoComplete="current-password" value={p}
+              onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/>
+            {err&&<div style={{color:C.danger,fontSize:12,marginBottom:8}}>{err}</div>}
+            <button style={{...s.btn(),width:"100%",opacity:loading?0.6:1}} onClick={doLogin} disabled={loading}>
+              {loading?"⏳ Verificando...":"🔐 Ingresar"}
+            </button>
+            <div style={{marginTop:14,fontSize:11,color:C.gray}}>
+              Si olvidaste tu contraseña, solicita al administrador que te asigne una temporal.
+            </div>
+          </>
         ):(
-          <><div style={{background:"#f0fdf4",border:`1px solid #bbf7d0`,borderRadius:6,padding:10,marginBottom:12,fontSize:12}}>✅ Bienvenido/a <strong>{invite.name}</strong><br/>Rol: <span style={s.bdg(rc(invite.role))}>{ROLES.find(r=>r.value===invite.role)?.label}</span></div>
-          {[["username","Usuario"],["password","Contraseña"],["password2","Confirmar contraseña"]].map(([k,l])=>(
-            <div key={k}><label style={s.lbl}>{l}</label><input style={{...s.inp,marginBottom:10}} type={k!=="username"?"password":"text"} value={af[k]} onChange={e=>setAf(f=>({...f,[k]:e.target.value}))}/></div>
-          ))}
-          {aerr&&<div style={{color:C.danger,fontSize:12,marginBottom:8}}>{aerr}</div>}
-          <button style={{...s.btn(C.success),width:"100%"}} onClick={doActivate}>✅ Activar cuenta</button>
-          <button style={{...s.bOut(),width:"100%",marginTop:8}} onClick={()=>setInvite(null)}>← Cambiar código</button></>
+          <>
+            <div style={{background:"#fffbeb",border:`1px solid #fde68a`,borderRadius:6,padding:10,marginBottom:14,fontSize:12,color:"#92400e",textAlign:"left"}}>
+              🔑 Hola <strong>{mustChange.usr.name}</strong>. Por seguridad debes definir tu propia contraseña
+              antes de ingresar. La contraseña temporal dejará de funcionar.
+            </div>
+            <label style={s.lbl}>Nueva contraseña (mín. 8 caracteres)</label>
+            <input style={{...s.inp,marginBottom:10}} type="password" autoComplete="new-password" value={np} onChange={e=>setNp(e.target.value)}/>
+            <label style={s.lbl}>Confirmar nueva contraseña</label>
+            <input style={{...s.inp,marginBottom:14}} type="password" autoComplete="new-password" value={np2}
+              onChange={e=>setNp2(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doChange()}/>
+            {err&&<div style={{color:C.danger,fontSize:12,marginBottom:8}}>{err}</div>}
+            <button style={{...s.btn(C.success),width:"100%",opacity:loading?0.6:1}} onClick={doChange} disabled={loading}>
+              {loading?"⏳ Guardando...":"✅ Cambiar contraseña e ingresar"}
+            </button>
+            <button style={{...s.bOut(),width:"100%",marginTop:8}} onClick={()=>{setMustChange(null);setNp("");setNp2("");setErr("");}}>← Volver</button>
+          </>
         )}
       </div>
     </div>
@@ -1123,90 +1152,171 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
   );
 }
 
-// ── EMAIL CONFIG + USER MANAGER ───────────────────────────────────────────────
-function EmailConfig({emailConfig,setEmailConfig}) {
-  const [cfg,setCfg]=useState({...emailConfig}); const [saved,setSaved]=useState(false);
-  const save=()=>{setEmailConfig({...cfg});setSaved(true);setTimeout(()=>setSaved(false),2000);};
-  return (
-    <div style={s.card}>
-      <div style={s.title}>⚙️ Configuración EmailJS</div>
-      <div style={s.row}>
-        {[["serviceId","Service ID","service_xxx"],["templateId","Template ID","template_xxx"],["publicKey","Public Key","xxxxxxxx"]].map(([k,l,ph])=>(
-          <div key={k} style={{flex:"1 1 160px"}}><label style={s.lbl}>{l}</label><input style={{...s.inp,marginBottom:10}} value={cfg[k]} onChange={e=>setCfg(c=>({...c,[k]:e.target.value}))} placeholder={ph}/></div>
-        ))}
-      </div>
-      <button style={s.btn(saved?C.success:C.primary)} onClick={save}>{saved?"✅ Guardado":"💾 Guardar"}</button>
-    </div>
-  );
-}
+// ── USER MANAGER ──────────────────────────────────────────────────────────────
+// El administrador crea usuarios asignando una contraseña inicial que el usuario
+// está obligado a cambiar en su primer ingreso. El administrador NUNCA puede ver
+// contraseñas: solo puede resetearlas (asignando una nueva temporal) o
+// activar/desactivar el acceso. Toda acción se verifica en el servidor con las
+// credenciales del propio administrador (fn_admin_* en Supabase).
+function UserManager({users,setUsers,currentUser}) {
+  const [showNew,setShowNew]=useState(false);
+  const [nf,setNf]=useState({username:"",name:"",email:"",role:"rrvv",password:"",password2:""});
+  const [nErr,setNErr]=useState("");
+  const [showEdit,setShowEdit]=useState(false);
+  const [editTarget,setEditTarget]=useState(null); const [eForm,setEForm]=useState({});
+  const [showReset,setShowReset]=useState(null); // usuario objetivo del reset
+  const [rp,setRp]=useState(""); const [rp2,setRp2]=useState(""); const [rErr,setRErr]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [toast,setToast]=useState(null);
+  const toast2=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),5000);};
+  // Credenciales del admin en sesión (solo en memoria, nunca persistidas):
+  // el servidor las exige para autorizar cada acción administrativa.
+  const adminCreds={username:currentUser.username,password:currentUser._pw};
 
-function UserManager({users,setUsers,invites,setInvites,currentUser,emailConfig,setEmailConfig}) {
-  const [tab,setTab]=useState("usuarios"); const [showInv,setShowInv]=useState(false); const [showEdit,setShowEdit]=useState(false);
-  const [editTarget,setEditTarget]=useState(null); const [inv,setInv]=useState({name:"",email:"",role:"rrvv"}); const [eForm,setEForm]=useState({});
-  const [sending,setSending]=useState(false); const [toast,setToast]=useState(null);
-  const toast2=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),4000);};
-  const sendInvite=async()=>{
-    if(!inv.name.trim()||!inv.email.trim()) return toast2("Completa nombre y correo.","error");
-    const {serviceId,templateId,publicKey}=emailConfig; const code=genCode(); const roleLabel=ROLES.find(r=>r.value===inv.role)?.label||inv.role;
-    const newInv={id:Date.now(),code,name:inv.name,email:inv.email,role:inv.role,status:"pending",sentAt:new Date().toLocaleString()};
-    if(serviceId&&templateId&&publicKey){ setSending(true); try{ const res=await fetch("https://api.emailjs.com/api/v1.0/email/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({service_id:serviceId.trim(),template_id:templateId.trim(),user_id:publicKey.trim(),template_params:{to_email:inv.email.trim(),to_name:inv.name.trim(),role_label:roleLabel,invite_code:code,invite_link:window.location.href}})}); if(!res.ok) throw new Error(await res.text()); toast2(`✉️ Correo enviado a ${inv.email}`); }catch(e){ toast2(`⚠️ ${e.message}. Código: ${code}`,"warn"); } setSending(false); }
-    else{ toast2(`📋 Sin EmailJS. Código: ${code}`,"warn"); }
-    try{ const saved=await db.invites.insert(newInv); setInvites(x=>[...x,saved]); }catch{ setInvites(x=>[...x,newInv]); }
-    setInv({name:"",email:"",role:"rrvv"}); setShowInv(false);
+  const createUser=async()=>{
+    if(busy) return;
+    const username=nf.username.trim();
+    if(!username||!nf.name.trim())        return setNErr("Usuario y nombre son obligatorios.");
+    if(!/^[a-zA-Z0-9._-]{3,30}$/.test(username)) return setNErr("Usuario: 3–30 caracteres, solo letras, números, punto, guion o guion bajo.");
+    if(nf.password.length<8)              return setNErr("La contraseña inicial debe tener al menos 8 caracteres.");
+    if(nf.password!==nf.password2)        return setNErr("Las contraseñas no coinciden.");
+    if(users.find(x=>x.username===username)) return setNErr("Ese usuario ya existe.");
+    setNErr(""); setBusy(true);
+    try{
+      const nuevo=await db.users.create(adminCreds,{username,password:nf.password,role:nf.role,name:nf.name.trim(),email:nf.email.trim()});
+      setUsers(us=>[...us,nuevo]);
+      setShowNew(false); setNf({username:"",name:"",email:"",role:"rrvv",password:"",password2:""});
+      toast2(`✅ Usuario "${username}" creado. Deberá cambiar su contraseña en el primer ingreso.`);
+    }catch(e){ setNErr("Error: "+e.message); }
+    finally{ setBusy(false); }
   };
-  const openEdit=(u)=>{setEditTarget(u);setEForm({name:u.name,email:u.email||"",role:u.role,active:u.active});setShowEdit(true);};
-  const saveEdit=async()=>{ try{ await db.users.update(editTarget.id,eForm); setUsers(us=>us.map(u=>u.id===editTarget.id?{...u,...eForm}:u)); setShowEdit(false); toast2("Actualizado."); }catch(e){ toast2("Error: "+e.message,"error"); } };
-  const toggle=async(id)=>{ if(id===currentUser.id)return; const u=users.find(x=>x.id===id); if(!u)return; try{ await db.users.update(id,{active:!u.active}); setUsers(us=>us.map(x=>x.id===id?{...x,active:!x.active}:x)); }catch(e){ toast2("Error: "+e.message,"error"); } };
+
+  const openEdit=(u)=>{ setEditTarget(u); setEForm({name:u.name,email:u.email||"",role:u.role}); setShowEdit(true); };
+  const saveEdit=async()=>{
+    if(busy) return;
+    setBusy(true);
+    try{
+      const upd=await db.users.adminUpdate(adminCreds,editTarget.id,eForm);
+      setUsers(us=>us.map(u=>u.id===editTarget.id?upd:u));
+      setShowEdit(false); toast2("Usuario actualizado.");
+    }catch(e){ toast2("Error: "+e.message,"error"); }
+    finally{ setBusy(false); }
+  };
+
+  const doReset=async()=>{
+    if(busy) return;
+    if(rp.length<8)  return setRErr("La contraseña temporal debe tener al menos 8 caracteres.");
+    if(rp!==rp2)     return setRErr("Las contraseñas no coinciden.");
+    setRErr(""); setBusy(true);
+    try{
+      await db.users.resetPassword(adminCreds,showReset.id,rp);
+      setUsers(us=>us.map(u=>u.id===showReset.id?{...u,mustChangePassword:true}:u));
+      toast2(`🔑 Contraseña temporal asignada a "${showReset.username}". Deberá cambiarla al ingresar.`);
+      setShowReset(null); setRp(""); setRp2("");
+    }catch(e){ setRErr("Error: "+e.message); }
+    finally{ setBusy(false); }
+  };
+
+  const toggle=async(u)=>{
+    if(busy||u.id===currentUser.id) return;
+    setBusy(true);
+    try{
+      await db.users.setActive(adminCreds,u.id,!u.active);
+      setUsers(us=>us.map(x=>x.id===u.id?{...x,active:!x.active}:x));
+      toast2(u.active?`⛔ Acceso desactivado para "${u.username}".`:`✅ Acceso reactivado para "${u.username}".`);
+    }catch(e){ toast2("Error: "+e.message,"error"); }
+    finally{ setBusy(false); }
+  };
+
   return (
     <div style={s.page}>
-      {toast&&<div style={{position:"fixed",top:16,right:16,zIndex:200,background:toast.type==="error"?C.danger:toast.type==="warn"?C.warning:C.success,color:"#fff",padding:"10px 18px",borderRadius:8,maxWidth:380,fontSize:13}}>{toast.msg}</div>}
-      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
-        {[["usuarios","👥 Usuarios"],["invitaciones","✉️ Invitaciones"],["config","⚙️ Correo"]].map(([k,l])=><button key={k} style={s.btn(tab===k?C.primary:"#e5e7eb")} onClick={()=>setTab(k)}><span style={{color:tab===k?"#fff":C.gray}}>{l}</span></button>)}
+      {toast&&<div style={{position:"fixed",top:16,right:16,zIndex:200,background:toast.type==="error"?C.danger:C.success,color:"#fff",padding:"10px 18px",borderRadius:8,maxWidth:400,fontSize:13}}>{toast.msg}</div>}
+      <div style={s.card}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={s.title}>👥 Usuarios</div>
+          <button style={s.btn()} onClick={()=>{setShowNew(true);setNErr("");}}>+ Crear usuario</button>
+        </div>
+        <div style={{background:"#eff6ff",border:`1px solid #bfdbfe`,borderRadius:6,padding:10,marginBottom:14,fontSize:12,color:"#1e40af"}}>
+          🔒 Las contraseñas se guardan cifradas y <strong>nadie puede verlas</strong>, ni siquiera el administrador.
+          Puedes asignar una contraseña temporal con "Resetear clave": el usuario estará obligado a cambiarla en su siguiente ingreso.
+        </div>
+        <div style={{...s.row,marginBottom:14}}>{ROLES.map(r=><div key={r.value} style={{background:"#f9fafb",borderRadius:6,padding:"6px 10px",borderLeft:`4px solid ${r.color}`,flex:"1 1 110px"}}><div style={{fontWeight:"bold",color:r.color,fontSize:11}}>{r.label}</div><div style={{color:C.gray,fontSize:10}}>{r.desc}</div></div>)}</div>
+        <table style={s.tbl}>
+          <thead><tr>{["Nombre","Usuario","Rol","Estado","Clave","Acciones"].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
+          <tbody>{users.map(u=>(
+            <tr key={u.id} style={{opacity:u.active?1:.55}}>
+              <td style={s.td}><strong>{u.name}</strong></td>
+              <td style={s.td}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:3}}>{u.username}</code></td>
+              <td style={s.td}><span style={s.bdg(rc(u.role))}>{ROLES.find(r=>r.value===u.role)?.label}</span></td>
+              <td style={s.td}><span style={s.bdg(u.active?C.success:C.gray)}>{u.active?"Activo":"Inactivo"}</span></td>
+              <td style={s.td}>{u.mustChangePassword?<span style={s.bdg(C.warning)}>Temporal — pend. cambio</span>:<span style={s.bdg(C.success)}>Definida por el usuario</span>}</td>
+              <td style={s.td}><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button style={s.btn(C.accent,true)} onClick={()=>openEdit(u)}>Editar</button>
+                <button style={s.btn(C.warning,true)} onClick={()=>{setShowReset(u);setRp("");setRp2("");setRErr("");}}>Resetear clave</button>
+                {u.id!==currentUser.id&&<button style={s.btn(u.active?C.danger:C.success,true)} onClick={()=>toggle(u)}>{u.active?"Desactivar":"Activar"}</button>}
+              </div></td>
+            </tr>
+          ))}</tbody>
+        </table>
       </div>
-      {tab==="usuarios"&&(
-        <div style={s.card}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={s.title}>👥 Usuarios</div><button style={s.btn()} onClick={()=>setShowInv(true)}>+ Invitar</button></div>
-          <div style={{...s.row,marginBottom:14}}>{ROLES.map(r=><div key={r.value} style={{background:"#f9fafb",borderRadius:6,padding:"6px 10px",borderLeft:`4px solid ${r.color}`,flex:"1 1 110px"}}><div style={{fontWeight:"bold",color:r.color,fontSize:11}}>{r.label}</div><div style={{color:C.gray,fontSize:10}}>{r.desc}</div></div>)}</div>
-          <table style={s.tbl}>
-            <thead><tr>{["Nombre","Usuario","Rol","Estado","Acciones"].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
-            <tbody>{users.map(u=>(
-              <tr key={u.id} style={{opacity:u.active?1:.55}}>
-                <td style={s.td}><strong>{u.name}</strong></td>
-                <td style={s.td}><code style={{background:"#f3f4f6",padding:"2px 6px",borderRadius:3}}>{u.username}</code></td>
-                <td style={s.td}><span style={s.bdg(rc(u.role))}>{ROLES.find(r=>r.value===u.role)?.label}</span></td>
-                <td style={s.td}><span style={s.bdg(u.active?C.success:C.gray)}>{u.active?"Activo":"Inactivo"}</span></td>
-                <td style={s.td}><div style={{display:"flex",gap:6}}><button style={s.btn(C.accent,true)} onClick={()=>openEdit(u)}>Editar</button>{u.id!==currentUser.id&&<button style={s.btn(u.active?C.danger:C.success,true)} onClick={()=>toggle(u.id)}>{u.active?"Desactivar":"Activar"}</button>}</div></td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      )}
-      {tab==="invitaciones"&&(
-        <div style={s.card}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={s.title}>✉️ Invitaciones</div><button style={s.btn()} onClick={()=>setShowInv(true)}>+ Nueva</button></div>
-          {invites.length===0?<div style={{textAlign:"center",padding:30,color:C.gray}}>No hay invitaciones.</div>:(
-            <table style={s.tbl}><thead><tr>{["Nombre","Correo","Rol","Código","Estado","Enviada",""].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
-            <tbody>{invites.map(i=>(<tr key={i.id}><td style={s.td}>{i.name}</td><td style={s.td}>{i.email}</td><td style={s.td}><span style={s.bdg(rc(i.role))}>{ROLES.find(r=>r.value===i.role)?.label}</span></td><td style={s.td}><code style={{background:"#f3f4f6",padding:"2px 4px",borderRadius:3,letterSpacing:1}}>{i.code}</code></td><td style={s.td}><span style={s.bdg(i.status==="pending"?C.warning:i.status==="used"?C.success:C.gray)}>{i.status==="pending"?"Pendiente":i.status==="used"?"Activada":"Revocada"}</span></td><td style={s.td}>{i.sentAt}</td><td style={s.td}>{i.status==="pending"&&<button style={s.btn(C.danger,true)} onClick={async()=>{ try{ await db.invites.update(i.id,{status:"revoked"}); setInvites(x=>x.map(j=>j.id===i.id?{...j,status:"revoked"}:j)); }catch(e){ notify("Error: "+e.message); } }}>Revocar</button>}</td></tr>))}</tbody></table>
-          )}
-        </div>
-      )}
-      {tab==="config"&&<EmailConfig emailConfig={emailConfig} setEmailConfig={setEmailConfig}/>}
-      {showInv&&(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
-        <div style={{background:"#fff",borderRadius:8,padding:24,width:400,boxShadow:"0 4px 20px rgba(0,0,0,.2)"}}>
-          <div style={{fontWeight:"bold",fontSize:15,color:C.primary,marginBottom:12}}>✉️ Invitar Usuario</div>
-          <label style={s.lbl}>Nombre *</label><input style={{...s.inp,marginBottom:10}} value={inv.name} onChange={e=>setInv(f=>({...f,name:e.target.value}))}/>
-          <label style={s.lbl}>Correo *</label><input style={{...s.inp,marginBottom:10}} type="email" value={inv.email} onChange={e=>setInv(f=>({...f,email:e.target.value}))}/>
-          <label style={s.lbl}>Rol *</label><select style={{...s.inp,marginBottom:14}} value={inv.role} onChange={e=>setInv(f=>({...f,role:e.target.value}))}>{ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}</select>
-          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button style={s.bOut()} onClick={()=>setShowInv(false)}>Cancelar</button><button style={s.btn(C.success)} onClick={sendInvite} disabled={sending}>{sending?"Enviando...":"📨 Enviar"}</button></div>
+
+      {showNew&&(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
+        <div style={{background:"#fff",borderRadius:8,padding:24,width:420,boxShadow:"0 4px 20px rgba(0,0,0,.2)"}}>
+          <div style={{fontWeight:"bold",fontSize:15,color:C.primary,marginBottom:12}}>👤 Crear Usuario</div>
+          <div style={s.row}>
+            <div style={{flex:"1 1 160px"}}><label style={s.lbl}>Usuario (login) *</label>
+              <input style={{...s.inp,marginBottom:10}} value={nf.username} autoComplete="off" onChange={e=>setNf(f=>({...f,username:e.target.value}))}/></div>
+            <div style={{flex:"1 1 160px"}}><label style={s.lbl}>Nombre completo *</label>
+              <input style={{...s.inp,marginBottom:10}} value={nf.name} onChange={e=>setNf(f=>({...f,name:e.target.value}))}/></div>
+          </div>
+          <label style={s.lbl}>Correo</label>
+          <input style={{...s.inp,marginBottom:10}} type="email" value={nf.email} onChange={e=>setNf(f=>({...f,email:e.target.value}))}/>
+          <label style={s.lbl}>Rol *</label>
+          <select style={{...s.inp,marginBottom:10}} value={nf.role} onChange={e=>setNf(f=>({...f,role:e.target.value}))}>{ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}</select>
+          <div style={s.row}>
+            <div style={{flex:"1 1 160px"}}><label style={s.lbl}>Contraseña inicial * (mín. 8)</label>
+              <input style={{...s.inp,marginBottom:10}} type="password" autoComplete="new-password" value={nf.password} onChange={e=>setNf(f=>({...f,password:e.target.value}))}/></div>
+            <div style={{flex:"1 1 160px"}}><label style={s.lbl}>Confirmar contraseña *</label>
+              <input style={{...s.inp,marginBottom:10}} type="password" autoComplete="new-password" value={nf.password2} onChange={e=>setNf(f=>({...f,password2:e.target.value}))}/></div>
+          </div>
+          <div style={{fontSize:11,color:C.gray,marginBottom:10}}>ℹ️ Entrega esta contraseña inicial al usuario por un medio seguro. El sistema le exigirá cambiarla en su primer ingreso y quedará cifrada: nadie podrá verla.</div>
+          {nErr&&<div style={{color:C.danger,fontSize:12,marginBottom:8}}>{nErr}</div>}
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <button style={s.bOut()} onClick={()=>setShowNew(false)}>Cancelar</button>
+            <button style={{...s.btn(C.success),opacity:busy?0.6:1}} onClick={createUser} disabled={busy}>{busy?"⏳ Creando...":"✅ Crear usuario"}</button>
+          </div>
         </div>
       </div>)}
+
       {showEdit&&(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
         <div style={{background:"#fff",borderRadius:8,padding:24,width:380,boxShadow:"0 4px 20px rgba(0,0,0,.2)"}}>
-          <div style={{fontWeight:"bold",fontSize:15,color:C.primary,marginBottom:14}}>Editar Usuario</div>
+          <div style={{fontWeight:"bold",fontSize:15,color:C.primary,marginBottom:14}}>Editar Usuario — <code>{editTarget?.username}</code></div>
           {[["name","Nombre"],["email","Correo"]].map(([k,l])=>(<div key={k}><label style={s.lbl}>{l}</label><input style={{...s.inp,marginBottom:10}} value={eForm[k]||""} onChange={e=>setEForm(f=>({...f,[k]:e.target.value}))}/></div>))}
-          <label style={s.lbl}>Rol</label><select style={{...s.inp,marginBottom:10}} value={eForm.role} onChange={e=>setEForm(f=>({...f,role:e.target.value}))}>{ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}</select>
-          <label style={{display:"flex",alignItems:"center",gap:6,marginBottom:14,cursor:"pointer"}}><input type="checkbox" checked={!!eForm.active} onChange={e=>setEForm(f=>({...f,active:e.target.checked}))}/> Activo</label>
-          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button style={s.bOut()} onClick={()=>setShowEdit(false)}>Cancelar</button><button style={s.btn()} onClick={saveEdit}>💾 Guardar</button></div>
+          <label style={s.lbl}>Rol</label>
+          <select style={{...s.inp,marginBottom:14}} value={eForm.role} onChange={e=>setEForm(f=>({...f,role:e.target.value}))}>{ROLES.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}</select>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <button style={s.bOut()} onClick={()=>setShowEdit(false)}>Cancelar</button>
+            <button style={{...s.btn(),opacity:busy?0.6:1}} onClick={saveEdit} disabled={busy}>{busy?"⏳...":"💾 Guardar"}</button>
+          </div>
+        </div>
+      </div>)}
+
+      {showReset&&(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
+        <div style={{background:"#fff",borderRadius:8,padding:24,width:400,boxShadow:"0 4px 20px rgba(0,0,0,.2)"}}>
+          <div style={{fontWeight:"bold",fontSize:15,color:C.warning,marginBottom:8}}>🔑 Resetear contraseña — <code>{showReset.username}</code></div>
+          <div style={{fontSize:12,color:C.gray,marginBottom:12}}>
+            Asignarás una contraseña temporal para <strong>{showReset.name}</strong>. La contraseña actual dejará de funcionar
+            y el usuario deberá definir una nueva en su siguiente ingreso.
+          </div>
+          <label style={s.lbl}>Contraseña temporal * (mín. 8)</label>
+          <input style={{...s.inp,marginBottom:10}} type="password" autoComplete="new-password" value={rp} onChange={e=>setRp(e.target.value)}/>
+          <label style={s.lbl}>Confirmar contraseña temporal *</label>
+          <input style={{...s.inp,marginBottom:10}} type="password" autoComplete="new-password" value={rp2} onChange={e=>setRp2(e.target.value)}/>
+          {rErr&&<div style={{color:C.danger,fontSize:12,marginBottom:8}}>{rErr}</div>}
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <button style={s.bOut()} onClick={()=>setShowReset(null)}>Cancelar</button>
+            <button style={{...s.btn(C.warning),opacity:busy?0.6:1}} onClick={doReset} disabled={busy}>{busy?"⏳...":"🔑 Asignar temporal"}</button>
+          </div>
         </div>
       </div>)}
     </div>
@@ -1277,8 +1387,6 @@ export default function App() {
   const [motivos,setMotivos]   = useState([]);
   const [plotes,setPlotes]     = useState([]);
   const [facturas,setFacturas] = useState([]);
-  const [invites,setInvites]   = useState([]);
-  const [emailConfig,setEmailConfig] = useState({serviceId:"",templateId:"",publicKey:""});
   const [user,setUser]   = useState(null);
   const [notas,setNotas] = useState([]);
   const [view,setView]   = useState("lista");
@@ -1291,19 +1399,18 @@ export default function App() {
   useEffect(()=>{
     (async()=>{
       try{
-        const [us,mo,pl,fa,no,inv]=await Promise.all([
+        const [us,mo,pl,fa,no]=await Promise.all([
           db.users.list(),
           db.motivos.list(),
           db.plotes.list(),
           db.facturas.list(),
           db.notas.list(),
-          db.invites.list(),
         ]);
-        // Supabase es la única fuente de verdad para usuarios.
-        // Si la tabla está vacía (instalación nueva sin seed), usar INIT_USERS como fallback visual.
-        setUsers(us.length>0?us:INIT_USERS);
+        // Supabase es la única fuente de verdad para usuarios (vista pública sin contraseñas).
+        // El usuario admin inicial se crea ejecutando security_setup.sql en Supabase.
+        setUsers(us);
         setMotivos(mo); setPlotes(pl); setFacturas(fa);
-        setNotas(no); setInvites(inv);
+        setNotas(no);
       }catch(e){
         setDbError(e.message||"Error al conectar con Supabase");
       }finally{
@@ -1313,14 +1420,6 @@ export default function App() {
   },[]);
 
   const canCreate=["rrvv","asistente"].includes(user?.role);
-  const onActivate=async(invite,username,password)=>{
-    try{
-      const newUser=await db.users.insert({username,password,role:invite.role,name:invite.name,email:invite.email,active:true,confirmed:true});
-      setUsers(us=>[...us,newUser]);
-      await db.invites.update(invite.id,{status:"used"});
-      setInvites(inv=>inv.map(i=>i.id===invite.id?{...i,status:"used"}:i));
-    }catch(e){ notify("Error al activar cuenta: "+e.message); }
-  };
 
   const roleStates=user?(ROLE_STATES[user.role]||Object.keys(STC)):[];
   const NAV=roleStates.map(k=>({k, l:getTabLabel(k,user?.role)}));
@@ -1354,14 +1453,14 @@ export default function App() {
       </div>
     </div>
   );
-  if(!user) return <><ToastHost/><Login users={users} onLogin={setUser} invites={invites} onActivate={onActivate}/></>;
+  if(!user) return <><ToastHost/><Login onLogin={setUser}/></>;
 
   const logout=()=>{ setUser(null); setView("lista"); setTab(""); };
 
   if(view==="nueva") return <div style={s.app}><ToastHost/><Header user={user} setView={setView} notas={notas} onLogout={logout}/><NotaForm user={user} users={users} motivos={motivos} plotes={plotes} facturas={facturas} setNotas={setNotas} onBack={()=>setView("lista")}/></div>;
   if(view==="detalle"&&selId){ const nota=notas.find(n=>n.id===selId); if(nota) return <div style={s.app}><ToastHost/><Header user={user} setView={setView} notas={notas} onLogout={logout}/><NotaDetail nota={nota} user={user} setNotas={setNotas} plotes={plotes} facturas={facturas} onBack={()=>setView("lista")}/></div>; }
   if(view==="maestros"&&user.role==="admin") return <div style={s.app}><ToastHost/><Header user={user} setView={setView} notas={notas} onLogout={logout}/><div style={s.nav}><button style={s.nBtn(false)} onClick={()=>setView("lista")}>← Notas</button><button style={s.nBtn(true)}>🗂️ Maestros</button></div><DatosMaestros motivos={motivos} setMotivos={setMotivos} plotes={plotes} setPlotes={setPlotes} facturas={facturas} setFacturas={setFacturas}/></div>;
-  if(view==="usuarios"&&user.role==="admin") return <div style={s.app}><ToastHost/><Header user={user} setView={setView} notas={notas} onLogout={logout}/><div style={s.nav}><button style={s.nBtn(false)} onClick={()=>setView("lista")}>← Notas</button><button style={s.nBtn(true)}>👥 Usuarios</button></div><UserManager users={users} setUsers={setUsers} invites={invites} setInvites={setInvites} currentUser={user} emailConfig={emailConfig} setEmailConfig={setEmailConfig}/></div>;
+  if(view==="usuarios"&&user.role==="admin") return <div style={s.app}><ToastHost/><Header user={user} setView={setView} notas={notas} onLogout={logout}/><div style={s.nav}><button style={s.nBtn(false)} onClick={()=>setView("lista")}>← Notas</button><button style={s.nBtn(true)}>👥 Usuarios</button></div><UserManager users={users} setUsers={setUsers} currentUser={user}/></div>;
 
   return (
     <div style={s.app}><ToastHost/>
