@@ -1166,6 +1166,7 @@ function UserManager({users,setUsers,currentUser}) {
   const [editTarget,setEditTarget]=useState(null); const [eForm,setEForm]=useState({});
   const [showReset,setShowReset]=useState(null); // usuario objetivo del reset
   const [rp,setRp]=useState(""); const [rp2,setRp2]=useState(""); const [rErr,setRErr]=useState("");
+  const [confirmDel,setConfirmDel]=useState(null); // usuario a eliminar
   const [busy,setBusy]=useState(false);
   const [toast,setToast]=useState(null);
   const toast2=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),5000);};
@@ -1228,6 +1229,18 @@ function UserManager({users,setUsers,currentUser}) {
     finally{ setBusy(false); }
   };
 
+  const doDelete=async()=>{
+    if(busy||!confirmDel) return;
+    setBusy(true);
+    try{
+      await db.users.deleteUser(adminCreds,confirmDel.id);
+      setUsers(us=>us.filter(x=>x.id!==confirmDel.id));
+      toast2(`🗑️ Usuario "${confirmDel.username}" eliminado.`);
+      setConfirmDel(null);
+    }catch(e){ toast2("Error: "+e.message,"error"); }
+    finally{ setBusy(false); }
+  };
+
   return (
     <div style={s.page}>
       {toast&&<div style={{position:"fixed",top:16,right:16,zIndex:200,background:toast.type==="error"?C.danger:C.success,color:"#fff",padding:"10px 18px",borderRadius:8,maxWidth:400,fontSize:13}}>{toast.msg}</div>}
@@ -1254,6 +1267,7 @@ function UserManager({users,setUsers,currentUser}) {
                 <button style={s.btn(C.accent,true)} onClick={()=>openEdit(u)}>Editar</button>
                 <button style={s.btn(C.warning,true)} onClick={()=>{setShowReset(u);setRp("");setRp2("");setRErr("");}}>Resetear clave</button>
                 {u.id!==currentUser.id&&<button style={s.btn(u.active?C.danger:C.success,true)} onClick={()=>toggle(u)}>{u.active?"Desactivar":"Activar"}</button>}
+                {u.id!==currentUser.id&&<button style={s.btn(C.danger,true)} onClick={()=>setConfirmDel(u)}>Eliminar</button>}
               </div></td>
             </tr>
           ))}</tbody>
@@ -1316,6 +1330,23 @@ function UserManager({users,setUsers,currentUser}) {
           <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
             <button style={s.bOut()} onClick={()=>setShowReset(null)}>Cancelar</button>
             <button style={{...s.btn(C.warning),opacity:busy?0.6:1}} onClick={doReset} disabled={busy}>{busy?"⏳...":"🔑 Asignar temporal"}</button>
+          </div>
+        </div>
+      </div>)}
+
+      {confirmDel&&(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
+        <div style={{background:"#fff",borderRadius:10,padding:28,width:360,boxShadow:"0 8px 32px rgba(0,0,0,.25)",textAlign:"center"}}>
+          <div style={{fontSize:36,marginBottom:8}}>⚠️</div>
+          <div style={{fontWeight:"bold",fontSize:15,color:C.danger,marginBottom:8}}>¿Eliminar usuario?</div>
+          <div style={{fontSize:13,color:C.gray,marginBottom:10}}>
+            Se eliminará permanentemente la cuenta de<br/><strong style={{color:C.primary}}>{confirmDel.name}</strong> (<code style={{background:"#f3f4f6",padding:"1px 5px",borderRadius:3}}>{confirmDel.username}</code>).
+          </div>
+          <div style={{fontSize:12,color:"#92400e",background:"#fffbeb",border:`1px solid #fde68a`,borderRadius:6,padding:"8px 12px",marginBottom:18}}>
+            Las notas de devolución asociadas a este usuario no se borrarán, pero ya no podrá ingresar al sistema.
+          </div>
+          <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+            <button style={s.bOut()} onClick={()=>setConfirmDel(null)}>Cancelar</button>
+            <button style={{...s.btn(C.danger),opacity:busy?0.6:1}} onClick={doDelete} disabled={busy}>{busy?"⏳ Eliminando...":"🗑️ Sí, eliminar"}</button>
           </div>
         </div>
       </div>)}
