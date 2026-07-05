@@ -155,33 +155,6 @@ function ToastHost(){
   );
 }
 
-function PredictiveInput({value,onChange,suggestions=[],placeholder,style,disabled}) {
-  const [open,setOpen]=useState(false);
-  const [localVal,setLocalVal]=useState(value||"");
-  const skipBlur=useRef(false);
-  useEffect(()=>{ setLocalVal(value||""); },[value]);
-  const filtered=(suggestions||[]).filter(x=>x.toLowerCase().includes((localVal||"").toLowerCase())).slice(0,10);
-  const handleChange=(v)=>{ setLocalVal(v); onChange(v); setOpen(true); };
-  const handleSelect=(x)=>{ skipBlur.current=true; setLocalVal(x); onChange(x); setOpen(false); setTimeout(()=>{ skipBlur.current=false; },300); };
-  return (
-    <div style={{position:"relative",display:"inline-block",width:style?.width||"100%",verticalAlign:"top"}}>
-      <input style={{...style,width:"100%",boxSizing:"border-box"}} value={localVal} placeholder={placeholder} disabled={disabled}
-        autoComplete="off" onChange={e=>handleChange(e.target.value)}
-        onFocus={()=>setOpen(true)} onBlur={()=>{ if(!skipBlur.current) setOpen(false); }}/>
-      {open&&filtered.length>0&&!disabled&&(
-        <div style={{position:"absolute",zIndex:1000,background:"#fff",border:`1px solid ${C.accent}`,borderRadius:6,boxShadow:"0 4px 16px rgba(0,0,0,.15)",maxHeight:220,overflowY:"auto",width:"max-content",minWidth:"100%",top:"calc(100% + 2px)",left:0}}>
-          {filtered.map((x,i)=>(
-            <div key={i} style={{padding:"7px 12px",cursor:"pointer",fontSize:12,borderBottom:`1px solid ${C.light}`,background:"#fff",whiteSpace:"nowrap"}}
-              onMouseDown={e=>{ e.preventDefault(); handleSelect(x); }}
-              onMouseEnter={e=>e.currentTarget.style.background="#eff6ff"}
-              onMouseLeave={e=>e.currentTarget.style.background="#fff"}>{x}</div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── RESTRICTED PICKER (combobox de selección obligatoria) ─────────────────────
 // Autocompleta por código o nombre, pero NUNCA acepta texto libre: si lo escrito
 // no coincide EXACTO con una opción de la lista, el campo se limpia solo al salir
@@ -294,22 +267,17 @@ function ProductHeader({calEditable}) {
   );
 }
 
-// Fila memoizada: solo se re-renderiza la fila que cambia, no las 10.
 // Fila memoizada: solo se re-renderiza la fila que cambia al escribir.
-const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditable,onChangeLine,plotes=[],facturas=[],codigoCliente=""}) {
-  // Escalonado basado en facturas del cliente seleccionado:
-  // 1) Códigos de materiales vendidos al cliente
-  const facCliente=codigoCliente ? facturas.filter(f=>f.codCliente===codigoCliente) : [];
-  // 3) Lotes: los que aparecen en facturas del cliente para ese código (deduplicados)
+// facCliente y productoOptions llegan precalculados desde ProductRows (una sola vez,
+// memoizados) en vez de recalcularse en cada una de las 10 filas por cada render —
+// clave para mantener el sistema ágil con maestros de facturas grandes.
+const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditable,onChangeLine,plotes=[],facCliente=[],productoOptions=[],codigoCliente=""}) {
+  // Lotes: los que aparecen en facturas del cliente para ese código (deduplicados)
   const lotesEnFactura=[...new Set(facCliente.filter(f=>f.codMaterial===l.codigo).map(f=>f.lote).filter(Boolean))];
-  // 4) Facturas del cliente para ese código+lote específico
+  // Facturas del cliente para ese código+lote específico
   const facturasSug=[...new Set(
     facCliente.filter(f=>f.codMaterial===l.codigo&&(!l.lote||f.lote===l.lote)).map(f=>f.noFactura)
   )];
-  // 5) Opciones de producto para el combobox restringido: una por código, deduplicado.
-  const productoOptions=[...new Map(facCliente.map(f=>[f.codMaterial,f.nombre])).entries()]
-    .map(([cod,label])=>({cod,label}))
-    .sort((a,b)=>a.cod.localeCompare(b.cod));
 
   return (
     <tr style={{background:i%2===0?"#f9fafb":"#fff"}}>
@@ -418,10 +386,22 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
 });
 
 function ProductRows({lineas,onChangeLine,editable,calEditable,facEditable,plotes=[],facturas=[],codigoCliente=""}) {
+  // Cálculo compartido: una sola pasada por el maestro de facturas para las 10 filas.
+  // useMemo garantiza identidad estable → React.memo de ProductRow evita re-renders.
+  const facCliente=useMemo(
+    ()=>codigoCliente?facturas.filter(f=>f.codCliente===codigoCliente):[],
+    [facturas,codigoCliente]
+  );
+  const productoOptions=useMemo(
+    ()=>[...new Map(facCliente.map(f=>[f.codMaterial,f.nombre])).entries()]
+      .map(([cod,label])=>({cod,label}))
+      .sort((a,b)=>a.cod.localeCompare(b.cod)),
+    [facCliente]
+  );
   return (
     <tbody>
       {lineas.map((l,i)=>(
-        <ProductRow key={i} l={l} i={i} editable={editable} calEditable={calEditable} facEditable={facEditable} onChangeLine={onChangeLine} plotes={plotes} facturas={facturas} codigoCliente={codigoCliente}/>
+        <ProductRow key={i} l={l} i={i} editable={editable} calEditable={calEditable} facEditable={facEditable} onChangeLine={onChangeLine} plotes={plotes} facCliente={facCliente} productoOptions={productoOptions} codigoCliente={codigoCliente}/>
       ))}
     </tbody>
   );
@@ -687,11 +667,30 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
 
   const changeLine=useCallback((i,patch)=>setMf(f=>{ const ls=[...f.lineas]; ls[i]={...ls[i],...patch}; return{...f,lineas:ls}; }),[]);
   const push=(a)=>({accion:`${a}${com?": "+com:""}`,usuario:user.name,fecha:new Date().toLocaleString()});
-  const upd=async(patch)=>{
+  const [busy,setBusy]=useState(false);
+  // Toda acción de workflow pasa por act():
+  //  1. Espera a que la escritura en la base termine ANTES de salir de la pantalla
+  //     (antes onBack() corría aunque la escritura fallara y el usuario creía que guardó).
+  //  2. Bloqueo optimista: la actualización solo se aplica si la nota sigue en el
+  //     estado que este usuario está viendo. Si otro usuario ya la movió, la base
+  //     rechaza el cambio, se recarga la lista y se avisa — nadie pisa a nadie.
+  //  3. busy evita el doble clic (que duplicaba entradas en el historial).
+  const act=async(patch)=>{
+    if(busy) return;
+    setBusy(true);
     try{
-      await db.notas.update(nota.id,patch);
+      await db.notas.update(nota.id,patch,nota.estado);
       setNotas(n=>n.map(x=>x.id===nota.id?{...x,...patch}:x));
-    }catch(e){ notify("Error al actualizar nota: "+e.message); }
+      onBack();
+    }catch(e){
+      if(e.message==="CONFLICT"){
+        notify("⚠ Esta nota fue modificada por otro usuario mientras la revisabas. Se recargó la información — verifica el estado actual antes de continuar.","warn");
+        try{ const fresh=await db.notas.get(nota.id); setNotas(n=>n.map(x=>x.id===nota.id?fresh:x)); }catch{}
+        onBack();
+      } else {
+        notify("Error al actualizar nota: "+e.message);
+      }
+    }finally{ setBusy(false); }
   };
 
   const isBod    = isBodeguero;
@@ -700,7 +699,6 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
   const isFac    = rol==="facturador";
   const isGer    = rol==="gerente";
 
-  const canBodEdit    = isBod && nota.estado==="en_bodega";
   const canBodCorregir= isBod && nota.estado==="en_bodega";
   const canRRVVConfirm= isRRVV && nota.estado==="corregida";
   const canCalAprobar = isCal && nota.estado==="en_calidad";
@@ -708,20 +706,29 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
   const canFacExportar= isFac && nota.estado==="en_facturacion";
   const canGerConfirm = isGer && nota.estado==="enviada_sap";
 
-  const isEditing    = canBodEdit||canBodCorregir;
+  const isEditing    = canBodCorregir;
   const isCalEditing = canCalAprobar;
   const isFacEditing = canFacEdit;
 
   const detectChanges=(orig,mod)=>{
     const ch=[];
+    // ── Cabecera ──────────────────────────────────────────────────────────────
+    if(orig.tipoDevolucion!==mod.tipoDevolucion) ch.push(`Tipo devolución: ${orig.tipoDevolucion||"—"}→${mod.tipoDevolucion||"—"}`);
+    if(orig.codigoMotivo!==mod.codigoMotivo)     ch.push(`Motivo: ${orig.codigoMotivo||"—"}→${mod.codigoMotivo||"—"}`);
+    if(orig.noBultos!==mod.noBultos)             ch.push(`Bultos: ${orig.noBultos||"—"}→${mod.noBultos||"—"}`);
+    if(orig.observacion!==mod.observacion)       ch.push(`Observación modificada`);
+    if(orig.nc!==mod.nc||orig.canje!==mod.canje) ch.push(`Tipo doc: ${orig.nc?"NC":orig.canje?"Canje":"—"}→${mod.nc?"NC":mod.canje?"Canje":"—"}`);
+    // ── Líneas ────────────────────────────────────────────────────────────────
     orig.lineas.forEach((ol,i)=>{
       const ml=mod.lineas[i];
-      if(!ol.nombre&&!ml.nombre) return;
-      const name=ml.nombre||ol.nombre||`Línea ${i+1}`;
-      if(ol.codigo!==ml.codigo) ch.push(`L${i+1} código: ${ol.codigo||"—"}→${ml.codigo||"—"}`);
-      if(ol.nombre!==ml.nombre) ch.push(`L${i+1} (${name}) nombre: "${ol.nombre}"→"${ml.nombre}"`);
-      if(ol.cantidad!==ml.cantidad) ch.push(`L${i+1} (${name}) cantidad: ${ol.cantidad||"—"}→${ml.cantidad||"—"}`);
-      if(ol.lote!==ml.lote) ch.push(`L${i+1} (${name}) lote: ${ol.lote||"—"}→${ml.lote||"—"}`);
+      if(!ol.nombre&&!ml.nombre&&!ol.codigo&&!ml.codigo) return;
+      const name=ml.nombre||ol.nombre||ml.codigo||ol.codigo||`Línea ${i+1}`;
+      if(ol.codigo!==ml.codigo)       ch.push(`L${i+1} código: ${ol.codigo||"—"}→${ml.codigo||"—"}`);
+      if(ol.nombre!==ml.nombre)       ch.push(`L${i+1} (${name}) nombre: "${ol.nombre||"—"}"→"${ml.nombre||"—"}"`);
+      if(ol.porc15!==ml.porc15)       ch.push(`L${i+1} (${name}) 15%: ${ol.porc15||"—"}→${ml.porc15||"—"}`);
+      if(ol.medVital!==ml.medVital)   ch.push(`L${i+1} (${name}) med.vital: ${ol.medVital||"—"}→${ml.medVital||"—"}`);
+      if(ol.cantidad!==ml.cantidad)   ch.push(`L${i+1} (${name}) cantidad: ${ol.cantidad||"—"}→${ml.cantidad||"—"}`);
+      if(ol.lote!==ml.lote)           ch.push(`L${i+1} (${name}) lote: ${ol.lote||"—"}→${ml.lote||"—"}`);
       if(ol.fechaVenc!==ml.fechaVenc) ch.push(`L${i+1} (${name}) f.venc: ${fmtD(ol.fechaVenc)||"—"}→${fmtD(ml.fechaVenc)||"—"}`);
       if(ol.facturaNo!==ml.facturaNo) ch.push(`L${i+1} (${name}) factura: ${ol.facturaNo||"—"}→${ml.facturaNo||"—"}`);
     });
@@ -834,15 +841,15 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
                       ✏️ Hay cambios — debes enviar al RRVV para su confirmación antes de aprobar.
                     </div>
                   )}
-                  <button style={s.btn(C.warning)} onClick={()=>{
+                  <button style={{...s.btn(C.warning),opacity:busy?0.6:1}} disabled={busy} onClick={()=>{
                     const log=haycambios
                       ? `Bodeguero corrigió → pendiente confirmación RRVV | ${changes.join(" | ")}`
                       : "Bodeguero corrigió → pendiente confirmación RRVV (sin cambios en materiales)";
-                    upd({estado:"corregida",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push(log)]});onBack();
+                    act({estado:"corregida",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push(log)]});
                   }}>✏️ Corregir → Enviar a RRVV</button>
                   {!haycambios&&(
-                    <button style={s.btn(STC.en_bodega)} onClick={()=>{
-                      upd({estado:"en_calidad",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push("Bodeguero aprobó → Inspector de Calidad")]});onBack();
+                    <button style={{...s.btn(STC.en_bodega),opacity:busy?0.6:1}} disabled={busy} onClick={()=>{
+                      act({estado:"en_calidad",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push("Bodeguero aprobó → Inspector de Calidad")]});
                     }}>✅ Aprobar → Calidad</button>
                   )}
                 </>
@@ -851,8 +858,8 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
 
             {canRRVVConfirm&&!showRechazo&&(
               <>
-                <button style={s.btn(C.success)} onClick={()=>{
-                  upd({estado:"en_bodega",historial:[...nota.historial,push("RRVV confirmó la corrección → regresa a bodega")]});onBack();
+                <button style={{...s.btn(C.success),opacity:busy?0.6:1}} disabled={busy} onClick={()=>{
+                  act({estado:"en_bodega",historial:[...nota.historial,push("RRVV confirmó la corrección → regresa a bodega")]});
                 }}>✔ Confirmar corrección</button>
                 <button style={s.btn(C.danger)} onClick={()=>setShowRechazo(true)}>✖ Rechazar corrección</button>
               </>
@@ -863,17 +870,16 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
                 <div style={{fontWeight:"bold",color:C.danger,marginBottom:8,fontSize:13}}>✖ Indicar motivo de rechazo</div>
                 <textarea style={{...s.inp,height:70,resize:"vertical",marginBottom:10}} value={motivoRechazo} onChange={e=>setMotivoRechazo(e.target.value)} placeholder="Describe por qué rechazas esta corrección..."/>
                 <div style={{display:"flex",gap:8}}>
-                  <button style={s.btn(C.danger)} onClick={()=>{
+                  <button style={{...s.btn(C.danger),opacity:busy?0.6:1}} disabled={busy} onClick={()=>{
                     if(!motivoRechazo.trim()) return notify("Debes indicar el motivo del rechazo.","warn");
-                    upd({estado:"en_bodega",motivoRechazo:motivoRechazo.trim(),modActual:null,historial:[...nota.historial,{accion:`RRVV rechazó corrección: ${motivoRechazo.trim()}`,usuario:user.name,fecha:new Date().toLocaleString()}]});
-                    onBack();
+                    act({estado:"en_bodega",motivoRechazo:motivoRechazo.trim(),modActual:null,historial:[...nota.historial,{accion:`RRVV rechazó corrección: ${motivoRechazo.trim()}`,usuario:user.name,fecha:new Date().toLocaleString()}]});
                   }}>Enviar rechazo</button>
                   <button style={s.bOut()} onClick={()=>setShowRechazo(false)}>Cancelar</button>
                 </div>
               </div>
             )}
 
-            {canCalAprobar&&<button style={s.btn(STC.en_calidad)} onClick={()=>{
+            {canCalAprobar&&<button disabled={busy} style={{...s.btn(STC.en_calidad),opacity:busy?0.6:1}} onClick={()=>{
               const errores=[];
               mf.lineas.forEach((l,i)=>{
                 if(!l.nombre&&!l.codigo) return;
@@ -882,15 +888,15 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
                 if(sum!==cant) errores.push(`Línea ${i+1} (${l.nombre||l.codigo}): ${sum}≠${cant}`);
               });
               if(errores.length>0){ notify(`❌ Und. Stock / Und. Destruc. deben cuadrar:\n${errores.join("\n")}`,"warn"); return; }
-              upd({estado:"en_facturacion",modActual:cloneForm(mf),historial:[...nota.historial,push("Inspector aprobó con destinos → Facturador")]});onBack();
+              act({estado:"en_facturacion",modActual:cloneForm(mf),historial:[...nota.historial,push("Inspector aprobó con destinos → Facturador")]});
             }}>✅ Aprobar → Facturador</button>}
 
-            {canFacExportar&&<button style={s.btn(STC.en_facturacion)} onClick={()=>{
-              upd({estado:"enviada_sap",registroFinal:cloneForm(mf),modActual:cloneForm(mf),historial:[...nota.historial,push("Facturador exportó a SAP — Excel generado")]});onBack();
+            {canFacExportar&&<button disabled={busy} style={{...s.btn(STC.en_facturacion),opacity:busy?0.6:1}} onClick={()=>{
+              act({estado:"enviada_sap",registroFinal:cloneForm(mf),modActual:cloneForm(mf),historial:[...nota.historial,push("Facturador exportó a SAP — Excel generado")]});
             }}>📤 Exportar a SAP</button>}
 
-            {canGerConfirm&&<button style={s.btn(STC.aprobada_sap)} onClick={()=>{
-              upd({estado:"aprobada_sap",historial:[...nota.historial,push("Gerente confirmó aprobación en SAP ✓")]});onBack();
+            {canGerConfirm&&<button disabled={busy} style={{...s.btn(STC.aprobada_sap),opacity:busy?0.6:1}} onClick={()=>{
+              act({estado:"aprobada_sap",historial:[...nota.historial,push("Gerente confirmó aprobación en SAP ✓")]});
             }}>✅ Confirmar Aprobación en SAP</button>}
           </div>
         </div>
@@ -1490,6 +1496,34 @@ export default function App() {
   },[]);
 
   const canCreate=user?.role==="rrvv";
+  const [refreshing,setRefreshing]=useState(false);
+
+  // Recarga la lista de notas desde la base — clave con varios usuarios trabajando
+  // a la vez: sin esto, un usuario no vería notas creadas o movidas por otros.
+  const reloadNotas=async()=>{
+    if(refreshing) return;
+    setRefreshing(true);
+    try{ setNotas(await db.notas.list()); }
+    catch(e){ notify("Error al actualizar: "+e.message); }
+    finally{ setRefreshing(false); }
+  };
+
+  // Abre el detalle con la versión FRESCA de la nota desde la base, no la copia
+  // local (que puede estar vieja si otro usuario ya la modificó).
+  const openNota=async(id)=>{
+    try{
+      const fresh=await db.notas.get(id);
+      setNotas(n=>n.map(x=>x.id===id?fresh:x));
+    }catch{/* si falla, se abre con la copia local */}
+    setSelId(id); setView("detalle");
+  };
+
+  // Al iniciar sesión, recargar notas para arrancar con datos actuales
+  // (la carga inicial pudo ocurrir mucho antes del login).
+  const handleLogin=async(u)=>{
+    setUser(u);
+    try{ setNotas(await db.notas.list()); }catch{}
+  };
 
   const roleStates=user?(ROLE_STATES[user.role]||Object.keys(STC)):[];
   const NAV=roleStates.map(k=>({k, l:getTabLabel(k,user?.role)}));
@@ -1523,7 +1557,7 @@ export default function App() {
       </div>
     </div>
   );
-  if(!user) return <><ToastHost/><Login onLogin={setUser}/></>;
+  if(!user) return <><ToastHost/><Login onLogin={handleLogin}/></>;
 
   const logout=()=>{ setUser(null); setView("lista"); setTab(""); };
 
@@ -1541,7 +1575,10 @@ export default function App() {
         <div style={s.card}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
             <div style={s.title}>📄 Notas de Devolución</div>
-            {canCreate&&<button style={s.btn()} onClick={()=>setView("nueva")}>+ Nueva Nota</button>}
+            <div style={{display:"flex",gap:8}}>
+              <button style={{...s.bOut(),opacity:refreshing?0.6:1}} onClick={reloadNotas} disabled={refreshing}>{refreshing?"⏳":"🔄 Actualizar"}</button>
+              {canCreate&&<button style={s.btn()} onClick={()=>setView("nueva")}>+ Nueva Nota</button>}
+            </div>
           </div>
           {filteredNotas.length===0?(
             <div style={{textAlign:"center",padding:40,color:C.gray}}>No hay notas en esta categoría.{canCreate&&<div style={{marginTop:8}}><button style={s.btn()} onClick={()=>setView("nueva")}>Crear primera nota</button></div>}</div>
@@ -1562,7 +1599,7 @@ export default function App() {
                       })():n.rrvvNombre}</td>
                     <td style={s.td}>{n.creadoPorNombre}</td>
                     <td style={s.td}><span style={s.bdg(STC[n.estado]||C.gray)}>{STL[n.estado]||TAB_LABELS[n.estado]||n.estado}</span></td>
-                    <td style={s.td}><button style={s.btn(C.accent,true)} onClick={()=>{setSelId(n.id);setView("detalle");}}>Ver</button></td>
+                    <td style={s.td}><button style={s.btn(C.accent,true)} onClick={()=>openNota(n.id)}>Ver</button></td>
                   </tr>
                 ))}</tbody>
               </table>
