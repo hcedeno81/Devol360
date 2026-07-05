@@ -299,11 +299,11 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
   // 1) Códigos de materiales vendidos al cliente
   const facCliente=codigoCliente ? facturas.filter(f=>f.codCliente===codigoCliente) : [];
   const codigosSug=[...new Set(facCliente.map(f=>f.codMaterial))].sort();
-  // 2) Nombres del código elegido (del maestro plotes, filtrado por lo vendido al cliente)
-  const codsDelCliente=new Set(facCliente.map(f=>f.codMaterial));
+  // 2) Nombres sugeridos: EXCLUSIVAMENTE desde el maestro de FACTURAS del cliente.
+  //    plotes nunca se usa para nombre/descripción — solo sirve más abajo para la fecha de caducidad del lote.
   const nombresSug=[...new Set(
-    plotes.filter(x=>codsDelCliente.has(x.codigo)&&(!l.codigo||x.codigo===l.codigo)).map(x=>x.nombre)
-  )].sort();
+    facCliente.filter(f=>!l.codigo||f.codMaterial===l.codigo).map(f=>f.nombre)
+  )].filter(Boolean).sort();
   // 3) Lotes: los que aparecen en facturas del cliente para ese código (deduplicados)
   const lotesEnFactura=[...new Set(facCliente.filter(f=>f.codMaterial===l.codigo).map(f=>f.lote).filter(Boolean))];
   // 4) Facturas del cliente para ese código+lote específico
@@ -320,14 +320,23 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
               placeholder={codigoCliente?"Código...":"— Elige cliente —"}
               disabled={!codigoCliente}
               suggestions={codigosSug}
-              onChange={v=>{ const pl=plotes.find(x=>x.codigo===v); onChangeLine(i,{codigo:v,nombre:pl?pl.nombre:"",lote:"",fechaVenc:"",facturaNo:""}); }}/>
+              onChange={v=>{
+                // El nombre/descripción viene SIEMPRE del maestro de facturas del cliente.
+                // plotes nunca se usa aquí (solo aporta la fecha de caducidad al elegir lote).
+                const fac=facCliente.find(x=>x.codMaterial===v);
+                onChangeLine(i,{codigo:v,nombre:fac?fac.nombre:"",lote:"",fechaVenc:"",facturaNo:""});
+              }}/>
           </td>
           <td style={s.td}>
             <PredictiveInput style={{...s.inp,width:170}} value={l.nombre}
               placeholder={codigoCliente?"Nombre material...":"— Elige cliente —"}
               disabled={!codigoCliente}
               suggestions={nombresSug}
-              onChange={v=>{ const pl=plotes.find(x=>(!l.codigo||x.codigo===l.codigo)&&x.nombre===v); onChangeLine(i,{nombre:v,codigo:pl?pl.codigo:l.codigo,lote:"",fechaVenc:"",facturaNo:""}); }}/>
+              onChange={v=>{
+                // Igual criterio: el emparejamiento nombre→código se hace solo contra facturas.
+                const fac=facCliente.find(x=>(!l.codigo||x.codMaterial===l.codigo)&&x.nombre===v);
+                onChangeLine(i,{nombre:v,codigo:fac?fac.codMaterial:l.codigo,lote:"",fechaVenc:"",facturaNo:""});
+              }}/>
           </td>
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`p15-${i}`} checked={l.porc15==="si"} onChange={()=>onChangeLine(i,{porc15:"si"})}/></td>
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`p15-${i}`} checked={l.porc15==="no"} onChange={()=>onChangeLine(i,{porc15:"no"})}/></td>
