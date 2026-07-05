@@ -188,18 +188,22 @@ function PredictiveInput({value,onChange,suggestions=[],placeholder,style,disabl
 // (blur), evitando que quede un código/nombre "inventado" o mal escrito que
 // rompería el enlace con el maestro de datos (facturas, clientes, etc.).
 // displayField: qué campo de la opción se muestra/edita en el input ("label" o "cod").
-function RestrictedPicker({value,onChange,options,placeholder,style,disabled,displayField="label",emptyMsg="Sin coincidencias",invalidMsg="⚠ Debes elegir una opción de la lista."}) {
+function RestrictedPicker({value,onChange,options,placeholder,style,disabled,displayField="label",emptyMsg="Sin coincidencias",invalidMsg="⚠ Debes elegir una opción de la lista.",fallbackText=""}) {
   // options: [{cod, label}]
   const [open,setOpen]=useState(false);
   const [text,setText]=useState("");
   const skipBlur=useRef(false);
   const matchKey=displayField==="cod"?"cod":"label";
 
-  // Sincroniza el texto mostrado con el valor seleccionado desde afuera
+  // Sincroniza el texto mostrado con el valor seleccionado desde afuera.
+  // Si el valor no está en options (producto guardado antes de que se actualizara el maestro),
+  // usa fallbackText para mostrar el dato guardado en vez de dejarlo vacío.
   useEffect(()=>{
     const sel=options.find(o=>o.cod===value);
-    setText(sel?sel[matchKey]:"");
-  },[value,options,matchKey]);
+    if(sel) setText(sel[matchKey]);
+    else if(value && fallbackText) setText(fallbackText);
+    else if(!value) setText("");
+  },[value,options,matchKey,fallbackText]);
 
   const norm=(v)=>(v||"").toLowerCase();
   const filtered=text
@@ -317,11 +321,10 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
               options={productoOptions} displayField="cod"
               placeholder={codigoCliente?"Código...":"— Elige cliente —"}
               disabled={!codigoCliente}
+              fallbackText={l.codigo}
               emptyMsg="Sin productos para este cliente"
               invalidMsg="⚠ Elige un producto de la lista."
               onChange={v=>{
-                // El nombre/descripción viene SIEMPRE del maestro de facturas del cliente.
-                // plotes nunca se usa aquí (solo aporta la fecha de caducidad al elegir lote).
                 const fac=facCliente.find(x=>x.codMaterial===v);
                 onChangeLine(i,{codigo:v,nombre:fac?fac.nombre:"",lote:"",fechaVenc:"",facturaNo:""});
               }}/>
@@ -331,10 +334,10 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
               options={productoOptions} displayField="label"
               placeholder={codigoCliente?"Nombre material...":"— Elige cliente —"}
               disabled={!codigoCliente}
+              fallbackText={l.nombre}
               emptyMsg="Sin productos para este cliente"
               invalidMsg="⚠ Elige un producto de la lista."
               onChange={v=>{
-                // Igual criterio: el emparejamiento nombre→código se hace solo contra facturas.
                 const fac=facCliente.find(x=>x.codMaterial===v);
                 onChangeLine(i,{codigo:v,nombre:fac?fac.nombre:"",lote:"",fechaVenc:"",facturaNo:""});
               }}/>
@@ -796,7 +799,8 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
             <ProductRows
               lineas={isCalEditing?mf.lineas:isFacEditing?mf.lineas:dispForm.lineas}
               editable={isEditing} calEditable={isCalEditing} facEditable={isFacEditing}
-              onChangeLine={changeLine} plotes={plotes}/>
+              onChangeLine={changeLine} plotes={plotes}
+              facturas={facturas} codigoCliente={f.codigoCliente}/>
           </table>
         </div>
 
