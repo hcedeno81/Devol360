@@ -63,7 +63,9 @@ const TAB_LABELS = {
 
 const getTabLabel = (k, role) => {
   if(k==="corregida" && isBodegueroRole(role)) return "🔄 En revisión de RRVV";
-  if(k==="en_bodega" && role==="rrvv")      return "📦 En Bodega";
+  if(k==="corregida" && role==="admin")        return "🔄 En Revisión RRVV";
+  if(k==="en_bodega" && role==="rrvv")         return "📦 En Bodega";
+  if(k==="en_bodega" && role==="admin")        return "📦 En Bodega";
   return TAB_LABELS[k] || k;
 };
 
@@ -76,6 +78,7 @@ const getEstadoLabel = (estado, role) => {
   if(estado==="corregida"){
     if(isBodegueroRole(role)) return "En revisión de RRVV";
     if(role==="rrvv")         return "Pendiente de tu revisión";
+    if(role==="admin")        return "En Revisión RRVV";
   }
   return STL[estado] || estado;
 };
@@ -394,7 +397,16 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
           <td style={s.td}>{l.cantidad}</td><td style={s.td}>{l.lote}</td>
           <td style={s.td}>{fmtD(l.fechaVenc)}</td>
           <td style={s.td}><input style={{...s.inp,width:90}} value={l.facturaNo} onChange={e=>onChangeLine(i,{facturaNo:e.target.value})}/></td>
-          <td style={s.td}><span style={s.bdg(l.destino==="Stock"?C.success:l.destino?C.danger:C.gray)}>{l.destino||"—"}</span></td>
+          <td style={s.td}>
+            {(parseFloat(l.cantStock)>0||parseFloat(l.cantDestruccion)>0)?(
+              <div style={{fontSize:11}}>
+                {parseFloat(l.cantStock)>0&&<div style={{color:C.success}}>📥 Stock: <strong>{l.cantStock}</strong></div>}
+                {parseFloat(l.cantDestruccion)>0&&<div style={{color:C.danger}}>🗑️ Destrucción: <strong>{l.cantDestruccion}</strong></div>}
+              </div>
+            ):(
+              <span style={s.bdg(l.destino==="Stock"?C.success:l.destino?C.danger:C.gray)}>{l.destino||"—"}</span>
+            )}
+          </td>
         </>
       ):(
         <>
@@ -405,7 +417,16 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
           <td style={{...s.td,textAlign:"center"}}>{l.medVital==="no"?"✓":""}</td>
           <td style={s.td}>{l.cantidad}</td><td style={s.td}>{l.lote}</td>
           <td style={s.td}>{fmtD(l.fechaVenc)}</td><td style={s.td}>{l.facturaNo}</td>
-          <td style={s.td}><span style={s.bdg(l.destino==="Stock"?C.success:l.destino==="Destrucción"?C.danger:l.destino?C.warning:C.gray)}>{l.destino||"—"}</span></td>
+          <td style={s.td}>
+            {(parseFloat(l.cantStock)>0||parseFloat(l.cantDestruccion)>0)?(
+              <div style={{fontSize:11}}>
+                {parseFloat(l.cantStock)>0&&<div style={{color:C.success}}>📥 Stock: <strong>{l.cantStock}</strong></div>}
+                {parseFloat(l.cantDestruccion)>0&&<div style={{color:C.danger}}>🗑️ Destrucción: <strong>{l.cantDestruccion}</strong></div>}
+              </div>
+            ):(
+              <span style={s.bdg(l.destino==="Stock"?C.success:l.destino==="Destrucción"?C.danger:l.destino?C.warning:C.gray)}>{l.destino||"—"}</span>
+            )}
+          </td>
         </>
       )}
     </tr>
@@ -1473,9 +1494,11 @@ function UserManager({users,setUsers,currentUser}) {
 function Stats({notas,user}) {
   const mine=visibleNotas(notas,user);
   const cnt=st=>mine.filter(n=>n.estado===st).length;
+  // Etiqueta de la tarjeta "corregida" según la perspectiva del rol.
+  const corregidaLbl=isBodegueroRole(user.role)?"En revisión RRVV":user.role==="admin"?"En Revisión RRVV":user.role==="rrvv"?"Pend. tu revisión":"Corregidas";
   const ALL=[
     {k:"en_bodega",      l:"En Bodega",       c:STC.en_bodega},
-    {k:"corregida",      l:"Corregidas",       c:STC.corregida},
+    {k:"corregida",      l:corregidaLbl,       c:STC.corregida},
     {k:"en_calidad",     l:"En Calidad",       c:STC.en_calidad},
     {k:"en_facturacion", l:"En Facturación",   c:STC.en_facturacion},
     {k:"enviada_sap",    l:"Enviadas SAP",     c:STC.enviada_sap},
