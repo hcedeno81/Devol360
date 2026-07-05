@@ -642,25 +642,16 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
         <div style={{...s.row,marginTop:10}}>
           <div style={{flex:"1 1 200px"}}><label style={s.lbl}>Tipo Devolución *</label>
             <div style={{display:"flex",gap:16,marginTop:4}}>{["Comercial","Institucional"].map(t=><label key={t} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer"}}><input type="radio" name="tipo" checked={form.tipoDevolucion===t} onChange={()=>sf("tipoDevolucion",t)}/>{t}</label>)}</div></div>
-          {(()=>{
-            // Opciones de motivo: {cod=codigo, label=descripcion} — RestrictedPicker igual que cliente/producto.
-            const motivoOptions=motivos.map(m=>({cod:m.codigo,label:m.descripcion})).sort((a,b)=>a.cod.localeCompare(b.cod));
-            const selMotivo=form.codigoMotivo;
-            return (<>
-              <div style={{flex:"0 0 150px"}}>
-                <label style={s.lbl}>Cód. Motivo</label>
-                <RestrictedPicker style={s.inp} value={selMotivo} options={motivoOptions} displayField="cod"
-                  placeholder="VEN" emptyMsg="Sin coincidencias" invalidMsg="⚠ Elige un motivo de la lista."
-                  onChange={v=>{ const m=motivos.find(x=>x.codigo===v); sf("codigoMotivo",v); sf("descripcionMotivo",m?m.descripcion:""); }}/>
-              </div>
-              <div style={{flex:"2 1 200px"}}>
-                <label style={s.lbl}>Descripción Motivo</label>
-                <RestrictedPicker style={s.inp} value={selMotivo} options={motivoOptions} displayField="label"
-                  placeholder="Seleccionar…" emptyMsg="Sin coincidencias" invalidMsg="⚠ Elige un motivo de la lista."
-                  onChange={v=>{ const m=motivos.find(x=>x.codigo===v); sf("codigoMotivo",v); sf("descripcionMotivo",m?m.descripcion:""); }}/>
-              </div>
-            </>);
-          })()}
+          <div style={{flex:"2 1 260px"}}>
+            <label style={s.lbl}>Motivo de Devolución *</label>
+            <select style={s.inp} value={form.codigoMotivo}
+              onChange={e=>{ const m=motivos.find(x=>x.codigo===e.target.value); sf("codigoMotivo",e.target.value); sf("descripcionMotivo",m?m.descripcion:""); }}>
+              <option value="">— Seleccionar motivo —</option>
+              {[...motivos].sort((a,b)=>a.codigo.localeCompare(b.codigo,undefined,{numeric:true})).map(m=>(
+                <option key={m.codigo} value={m.codigo}>{m.codigo} — {m.descripcion}</option>
+              ))}
+            </select>
+          </div>
           <div style={{flex:"0 0 120px"}}><label style={s.lbl}>Nº Bultos</label><input style={s.inp} value={form.noBultos} onChange={e=>sf("noBultos",e.target.value)}/></div>
         </div>
 
