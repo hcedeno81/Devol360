@@ -3,13 +3,20 @@ import { db } from "./supabase";
 
 // ── ROLES ─────────────────────────────────────────────────────────────────────
 const ROLES = [
-  { value:"admin",      label:"Administrador",         desc:"Acceso total + gestión de usuarios",      color:"#dc2626" },
-  { value:"rrvv",       label:"RRVV",                  desc:"Crea notas y confirma/rechaza correcciones", color:"#003087" },
-  { value:"bodeguero",  label:"Bodeguero",              desc:"Revisa, registra facturas y aprueba",     color:"#0891b2" },
-  { value:"inspector",  label:"Inspector de Calidad",   desc:"Define destinos Stock/Destrucción",       color:"#0d9488" },
-  { value:"facturador", label:"Facturador",             desc:"Corrige facturas y exporta a SAP",        color:"#d97706" },
-  { value:"gerente",    label:"Gerente de Operaciones", desc:"Confirma aprobación en SAP",              color:"#16a34a" },
+  { value:"admin",          label:"Administrador",          desc:"Acceso total + gestión de usuarios",       color:"#dc2626" },
+  { value:"rrvv",           label:"RRVV",                   desc:"Crea notas y confirma/rechaza correcciones", color:"#003087" },
+  { value:"bodeguero_uio",  label:"Bodeguero Quito",        desc:"Revisa devoluciones de Quito",             color:"#0891b2" },
+  { value:"bodeguero_gye",  label:"Bodeguero Guayaquil",    desc:"Revisa devoluciones de Guayaquil",         color:"#2563eb" },
+  { value:"inspector",      label:"Inspector de Calidad",   desc:"Define destinos Stock/Destrucción",        color:"#0d9488" },
+  { value:"facturador",     label:"Facturador",             desc:"Corrige facturas y exporta a SAP",         color:"#d97706" },
+  { value:"gerente",        label:"Gerente de Operaciones", desc:"Confirma aprobación en SAP",               color:"#16a34a" },
 ];
+
+// Reconoce cualquiera de los dos roles de bodeguero.
+const isBodegueroRole=(role)=>role==="bodeguero_uio"||role==="bodeguero_gye";
+// Ciudad que revisa cada rol de bodeguero.
+const ciudadDeBodeguero=(role)=>role==="bodeguero_uio"?"quito":role==="bodeguero_gye"?"guayaquil":null;
+const CIUDADES={quito:"Quito",guayaquil:"Guayaquil"};
 
 // ── ESTADOS ───────────────────────────────────────────────────────────────────
 const STC = {
@@ -36,12 +43,13 @@ const STL = {
 //   Nota: mientras una nota está En Calidad / En Facturación / Enviada a SAP no aparece
 //   en ninguna de sus 3 carpetas; reaparece al llegar a "Aprobada en SAP".
 const ROLE_STATES = {
-  admin:      ["en_bodega","corregida","en_calidad","en_facturacion","enviada_sap","aprobada_sap"],
-  rrvv:       ["en_bodega","corregida","aprobada_sap"],
-  bodeguero:  ["en_bodega","corregida","en_calidad","en_facturacion","aprobada_sap"],
-  inspector:  ["en_calidad"],
-  facturador: ["en_facturacion","enviada_sap","aprobada_sap"],
-  gerente:    ["enviada_sap","aprobada_sap"],
+  admin:          ["en_bodega","corregida","en_calidad","en_facturacion","enviada_sap","aprobada_sap"],
+  rrvv:           ["en_bodega","corregida","aprobada_sap"],
+  bodeguero_uio:  ["en_bodega","corregida","en_calidad","en_facturacion","aprobada_sap"],
+  bodeguero_gye:  ["en_bodega","corregida","en_calidad","en_facturacion","aprobada_sap"],
+  inspector:      ["en_calidad"],
+  facturador:     ["en_facturacion","enviada_sap","aprobada_sap"],
+  gerente:        ["enviada_sap","aprobada_sap"],
 };
 
 const TAB_LABELS = {
@@ -54,7 +62,7 @@ const TAB_LABELS = {
 };
 
 const getTabLabel = (k, role) => {
-  if(k==="corregida" && role==="bodeguero") return "🔄 Rechazadas por RRVV";
+  if(k==="corregida" && isBodegueroRole(role)) return "🔄 Rechazadas por RRVV";
   if(k==="en_bodega" && role==="rrvv")      return "📦 En Bodega";
   return TAB_LABELS[k] || k;
 };
@@ -132,6 +140,12 @@ const visibleNotas=(notas,user)=>{
   if(!user) return [];
   if(user.role==="admin") return notas;
   if(user.role==="rrvv") return notas.filter(n=>n.asignadoA===user.id);
+  // Cada bodeguero solo ve las notas de SU ciudad.
+  if(isBodegueroRole(user.role)){
+    const ciudad=ciudadDeBodeguero(user.role);
+    const states=ROLE_STATES[user.role]||[];
+    return notas.filter(n=>n.ciudad===ciudad&&states.includes(n.estado));
+  }
   const states=ROLE_STATES[user.role]||[];
   return notas.filter(n=>states.includes(n.estado));
 };
@@ -493,6 +507,8 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
   const hoy=new Date().toISOString().split("T")[0];
   const [form,setForm]=useState({...mkForm(),fecha:hoy});
   const [asig,setAsig]=useState(String(user.id));
+  const [tipoProducto,setTipoProducto]=useState(""); // 'normal' | 'controlado'
+  const [ciudad,setCiudad]=useState("");             // 'quito'  | 'guayaquil'
   const [submitErr,setSubmitErr]=useState("");
   const [guardando,setGuardando]=useState(false);
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
@@ -509,6 +525,8 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
     if(guardando) return; // evita doble click → notas duplicadas
     // ── Validación cabecera ────────────────────────────────────────────────────
     if(!form.fecha)          return setSubmitErr("La fecha es obligatoria.");
+    if(!tipoProducto)        return setSubmitErr("Indica si es producto normal o controlado.");
+    if(!ciudad)              return setSubmitErr("Indica si la devolución se revisa en Quito o Guayaquil.");
     if(!form.codigoCliente)  return setSubmitErr("Selecciona el cliente.");
     if(!form.nombreCliente)  return setSubmitErr("El nombre del cliente es obligatorio.");
     if(!form.tipoDevolucion) return setSubmitErr("Selecciona el tipo de devolución.");
@@ -540,6 +558,7 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
     try{
       const nuevaNota=await db.notas.insert({
         form:cloneForm(form),
+        tipoProducto,ciudad,
         asignadoA:parseInt(asig),rrvvNombre:rrvv?.name,
         creadoPor:user.id,creadoPorNombre:user.name,
         estado:"en_bodega",modActual:null,registroFinal:null,motivoRechazo:null,
@@ -561,8 +580,42 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
           <div style={{fontSize:11,color:C.gray}}>EC-MU-3207-FORM-LW-000087034 · Ver 1.0</div></div>
           <div style={{background:"#f0f4ff",borderRadius:6,padding:"8px 14px",textAlign:"right"}}>
             <div style={{fontSize:11,color:C.gray}}>Nº Nota</div>
-            <div style={{fontWeight:"bold",color:C.primary,fontSize:13}}>Se asignará al crear</div>
+            <div style={{fontWeight:"bold",color:C.primary,fontSize:13}}>
+              {tipoProducto==="controlado"?"C-… (al crear)":tipoProducto==="normal"?"NDV-… (al crear)":"Se asignará al crear"}
+            </div>
           </div>
+        </div>
+
+        <div style={{...s.card,background:"#f8fafc",border:`1px solid ${C.light}`,marginBottom:14}}>
+          <div style={s.row}>
+            <div style={{flex:"1 1 260px"}}>
+              <label style={s.lbl}>Tipo de producto *</label>
+              <div style={{display:"flex",gap:8,marginTop:4}}>
+                {[["normal","📦 Normal","NDV-"],["controlado","🔒 Controlado","C-"]].map(([v,lbl,pre])=>(
+                  <button key={v} type="button" onClick={()=>setTipoProducto(v)}
+                    style={{flex:1,padding:"8px 10px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:"bold",
+                      border:`2px solid ${tipoProducto===v?C.primary:C.light}`,
+                      background:tipoProducto===v?"#eff6ff":"#fff",color:tipoProducto===v?C.primary:C.gray}}>
+                    {lbl}<div style={{fontSize:10,fontWeight:"normal",color:C.gray,marginTop:2}}>Prefijo {pre}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{flex:"1 1 260px"}}>
+              <label style={s.lbl}>Ciudad de revisión *</label>
+              <div style={{display:"flex",gap:8,marginTop:4}}>
+                {[["quito","🏔️ Quito"],["guayaquil","🌴 Guayaquil"]].map(([v,lbl])=>(
+                  <button key={v} type="button" onClick={()=>setCiudad(v)}
+                    style={{flex:1,padding:"8px 10px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:"bold",
+                      border:`2px solid ${ciudad===v?C.accent:C.light}`,
+                      background:ciudad===v?"#eff6ff":"#fff",color:ciudad===v?C.accent:C.gray}}>
+                    {lbl}<div style={{fontSize:10,fontWeight:"normal",color:C.gray,marginTop:2}}>Bodega {CIUDADES[v]}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          {ciudad&&<div style={{fontSize:11,color:C.accent,marginTop:8}}>ℹ️ Esta devolución será revisada por el bodeguero de <strong>{CIUDADES[ciudad]}</strong>.</div>}
         </div>
 
         <div style={s.row}>
@@ -658,7 +711,7 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
   // no desde una corrección intermedia anterior. Los demás roles siguen usando
   // modActual cuando existe (Inspector, Facturador necesitan ver el estado actual).
   const rol=user.role;
-  const isBodeguero = rol==="bodeguero";
+  const isBodeguero = isBodegueroRole(rol);
   const workForm = isBodeguero ? nota.form : (nota.modActual||nota.form);
   const [mf,setMf]=useState(cloneForm(workForm));
   const [com,setCom]=useState("");
@@ -764,7 +817,7 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
             <div style={{fontWeight:"bold",fontSize:16,color:C.primary}}>NOTA DE DEVOLUCIÓN — Nº {nota.ndv}</div>
             <div style={{fontSize:12,color:C.gray}}>
               Creada por: <strong>{nota.creadoPorNombre}</strong> · RRVV: <strong>{nota.rrvvNombre}</strong>
-              {user.role==="bodeguero"&&(()=>{
+              {isBodegueroRole(user.role)&&(()=>{
                 const f=nota.form;
                 const facturasUsadas=new Set(f.lineas.map(l=>l.facturaNo).filter(Boolean));
                 const vendedores=[...new Set(
@@ -774,7 +827,11 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
               })()}
             </div>
           </div>
-          <span style={s.bdg(STC[nota.estado]||C.gray)}>{STL[nota.estado]||nota.estado}</span>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={s.bdg(nota.tipoProducto==="controlado"?C.danger:C.gray)}>{nota.tipoProducto==="controlado"?"🔒 Controlado":"📦 Normal"}</span>
+            <span style={s.bdg(nota.ciudad==="quito"?C.accent:"#2563eb")}>{nota.ciudad==="quito"?"🏔️ Quito":"🌴 Guayaquil"}</span>
+            <span style={s.bdg(STC[nota.estado]||C.gray)}>{STL[nota.estado]||nota.estado}</span>
+          </div>
         </div>
 
         {al&&<div style={{background:al.bg,border:`1px solid ${al.border}`,borderRadius:6,padding:10,marginBottom:12,fontSize:12,color:al.txt}}>{al.jsx}</div>}
@@ -1430,11 +1487,13 @@ function Stats({notas,user}) {
 
 // ── EXPORT ────────────────────────────────────────────────────────────────────
 function exportCSV(notas) {
-  const rows=[["NDV","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Destino","Stock","Destrucción","Estado"]];
+  const rows=[["NDV","TipoProducto","Ciudad","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Destino","Stock","Destrucción","Estado"]];
   notas.filter(n=>["enviada_sap","aprobada_sap"].includes(n.estado)).forEach(n=>{
     const f=n.registroFinal||n.modActual||n.form;
+    const tp=n.tipoProducto==="controlado"?"Controlado":"Normal";
+    const cd=n.ciudad==="quito"?"Quito":"Guayaquil";
     f.lineas.filter(l=>l.nombre).forEach(l=>{
-      rows.push([n.ndv,f.nombreCliente,f.codigoCliente,fmtD(f.fecha),f.tipoDevolucion,f.descripcionMotivo,n.rrvvNombre,l.codigo,l.nombre,l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),l.facturaNo,l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]]);
+      rows.push([n.ndv,tp,cd,f.nombreCliente,f.codigoCliente,fmtD(f.fecha),f.tipoDevolucion,f.descripcionMotivo,n.rrvvNombre,l.codigo,l.nombre,l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),l.facturaNo,l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]]);
     });
   });
   const csv=rows.map(r=>r.map(c=>`"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
@@ -1585,14 +1644,14 @@ export default function App() {
           ):(
             <div style={{overflowX:"auto"}}>
               <table style={s.tbl}>
-                <thead><tr>{["Nº Nota","Cliente","Fecha","Tipo",user.role==="bodeguero"?"Vendedor":"RRVV","Creada por","Estado",""].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Nº Nota","Cliente","Fecha","Ciudad",isBodegueroRole(user.role)?"Vendedor":"RRVV","Creada por","Estado",""].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
                 <tbody>{filteredNotas.map(n=>(
                   <tr key={n.id}>
                     <td style={{...s.td,fontWeight:"bold",color:C.primary}}>{n.ndv}</td>
                     <td style={s.td}>{n.form.nombreCliente}</td>
                     <td style={s.td}>{fmtD(n.form.fecha)}</td>
-                    <td style={s.td}>{n.form.tipoDevolucion}</td>
-                    <td style={s.td}>{user.role==="bodeguero"?(()=>{
+                    <td style={s.td}><span style={s.bdg(n.ciudad==="quito"?C.accent:"#2563eb")}>{n.ciudad==="quito"?"Quito":"Guayaquil"}</span></td>
+                    <td style={s.td}>{isBodegueroRole(user.role)?(()=>{
                         const facUsadas=new Set(n.form.lineas.map(l=>l.facturaNo).filter(Boolean));
                         const vends=[...new Set(facturas.filter(fc=>fc.codCliente===n.form.codigoCliente&&facUsadas.has(fc.noFactura)).map(fc=>fc.vendedor).filter(Boolean))];
                         return vends.length>0?vends.join(", "):n.rrvvNombre;
