@@ -60,6 +60,8 @@ const mapNota = (r) => ({
   creadoPorNombre:  r.creado_por_nombre,
   estado:           r.estado,
   motivoRechazo:    r.motivo_rechazo,
+  tipoProducto:     r.tipo_producto || 'normal',
+  ciudad:           r.ciudad || 'guayaquil',
   form:             r.form,
   modActual:        r.mod_actual,
   registroFinal:    r.registro_final,
@@ -317,7 +319,11 @@ export const db = {
       return mapNota(data);
     },
     async insert(nota) {
-      const { data: ndvData, error: ndvError } = await supabase.rpc('next_ndv');
+      // Elige la secuencia según el tipo de producto:
+      //  normal     → next_ndv()            → 'NDV-00000X'
+      //  controlado → next_ndv_controlado() → 'C-00000X'
+      const rpcName = nota.tipoProducto === 'controlado' ? 'next_ndv_controlado' : 'next_ndv';
+      const { data: ndvData, error: ndvError } = await supabase.rpc(rpcName);
       if (ndvError) throw ndvError;
       const ndv = ndvData;
       const rec = {
@@ -328,6 +334,8 @@ export const db = {
         creado_por_nombre: nota.creadoPorNombre,
         estado:            nota.estado || 'en_bodega',
         motivo_rechazo:    nota.motivoRechazo || null,
+        tipo_producto:     nota.tipoProducto || 'normal',
+        ciudad:            nota.ciudad || 'guayaquil',
         form:              nota.form,
         mod_actual:        nota.modActual || null,
         registro_final:    nota.registroFinal || null,
