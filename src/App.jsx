@@ -205,13 +205,14 @@ function AsyncPicker({value,valueLabel,onSelect,fetcher,placeholder,style,disabl
     else setText("");
   },[value,valueLabel,displayField]);
 
+  const [errMsg,setErrMsg]=useState("");
   const runSearch=(q)=>{
     clearTimeout(timer.current);
     timer.current=setTimeout(async()=>{
       const my=++seq.current;
-      setLoading(true);
+      setLoading(true); setErrMsg("");
       try{ const r=await fetcher(q); if(my===seq.current) setOpts(r||[]); }
-      catch{ if(my===seq.current) setOpts([]); }
+      catch(e){ if(my===seq.current){ setOpts([]); setErrMsg(e.message||"Error de consulta"); } }
       finally{ if(my===seq.current) setLoading(false); }
     },300);
   };
@@ -246,7 +247,8 @@ function AsyncPicker({value,valueLabel,onSelect,fetcher,placeholder,style,disabl
       {open&&!disabled&&(
         <div style={{position:"absolute",zIndex:1000,background:"#fff",border:`1px solid ${C.accent}`,borderRadius:6,boxShadow:"0 4px 16px rgba(0,0,0,.15)",maxHeight:240,overflowY:"auto",width:"max-content",minWidth:"100%",top:"calc(100% + 2px)",left:0}}>
           {loading&&<div style={{padding:"7px 12px",fontSize:12,color:C.gray}}>⏳ Buscando…</div>}
-          {!loading&&opts.length===0&&<div style={{padding:"7px 12px",fontSize:12,color:C.gray}}>{emptyMsg}</div>}
+          {!loading&&errMsg&&<div style={{padding:"7px 12px",fontSize:12,color:C.danger,maxWidth:320,whiteSpace:"normal"}}>❌ {errMsg}</div>}
+          {!loading&&!errMsg&&opts.length===0&&<div style={{padding:"7px 12px",fontSize:12,color:C.gray}}>{emptyMsg}</div>}
           {!loading&&opts.map(o=>(
             <div key={o.cod} style={{padding:"7px 12px",cursor:"pointer",fontSize:12,borderBottom:`1px solid ${C.light}`,background:"#fff",whiteSpace:"nowrap"}}
               onMouseDown={e=>{ e.preventDefault(); handleSelect(o); }}
