@@ -50,6 +50,22 @@ async function fetchAll(query, pageSize = 1000) {
   return all;
 }
 
+// Mapea una fila cruda de fk_notas (snake_case) al formato de la app (camelCase).
+const mapNota = (r) => ({
+  id:               r.id,
+  ndv:              r.ndv,
+  asignadoA:        r.asignado_a,
+  rrvvNombre:       r.rrvv_nombre,
+  creadoPor:        r.creado_por,
+  creadoPorNombre:  r.creado_por_nombre,
+  estado:           r.estado,
+  motivoRechazo:    r.motivo_rechazo,
+  form:             r.form,
+  modActual:        r.mod_actual,
+  registroFinal:    r.registro_final,
+  historial:        r.historial,
+});
+
 export const db = {
   // ── AUTENTICACIÓN ─────────────────────────────────────────────────────────
   // El login y el cambio de contraseña se ejecutan DENTRO de la base de datos
@@ -291,20 +307,14 @@ export const db = {
   notas: {
     async list() {
       const data = await fetchAll((f,t) => supabase.from('fk_notas').select('*').order('id', { ascending: false }).range(f,t));
-      return (data || []).map(r => ({
-        id:               r.id,
-        ndv:              r.ndv,
-        asignadoA:        r.asignado_a,
-        rrvvNombre:       r.rrvv_nombre,
-        creadoPor:        r.creado_por,
-        creadoPorNombre:  r.creado_por_nombre,
-        estado:           r.estado,
-        motivoRechazo:    r.motivo_rechazo,
-        form:             r.form,
-        modActual:        r.mod_actual,
-        registroFinal:    r.registro_final,
-        historial:        r.historial,
-      }));
+      return (data || []).map(mapNota);
+    },
+    // Trae UNA nota fresca desde la base — usada al abrir el detalle para no
+    // actuar sobre datos viejos cuando varios usuarios trabajan a la vez.
+    async get(id) {
+      const { data, error } = await supabase.from('fk_notas').select('*').eq('id', id).single();
+      if (error) throw error;
+      return mapNota(data);
     },
     async insert(nota) {
       const { data: ndvData, error: ndvError } = await supabase.rpc('next_ndv');
@@ -327,7 +337,11 @@ export const db = {
       if (error) throw error;
       return { ...nota, id: data.id, ndv };
     },
-    async update(id, patch) {
+    // BLOQUEO OPTIMISTA: si se pasa expectedEstado, la actualización solo se
+    // aplica si la nota sigue en ese estado en la base. Si otro usuario ya la
+    // movió, la base no actualiza ninguna fila y se lanza CONFLICT para que la
+    // interfaz recargue y avise — así ninguna acción pisa el trabajo de otro.
+    async update(id, patch, expectedEstado) {
       const rec = {};
       if (patch.estado          !== undefined) rec.estado           = patch.estado;
       if (patch.motivoRechazo   !== undefined) rec.motivo_rechazo   = patch.motivoRechazo;
@@ -335,8 +349,13 @@ export const db = {
       if (patch.registroFinal   !== undefined) rec.registro_final    = patch.registroFinal;
       if (patch.historial       !== undefined) rec.historial         = patch.historial;
       if (patch.form            !== undefined) rec.form              = patch.form;
-      const { error } = await supabase.from('fk_notas').update(rec).eq('id', id);
+      let q = supabase.from('fk_notas').update(rec).eq('id', id);
+      if (expectedEstado !== undefined) q = q.eq('estado', expectedEstado);
+      const { data, error } = await q.select('id');
       if (error) throw error;
+      if (expectedEstado !== undefined && (!data || data.length === 0)) {
+        throw new Error('CONFLICT');
+      }
     },
   },
 };
