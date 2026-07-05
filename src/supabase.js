@@ -80,7 +80,8 @@ export const db = {
   motivos: {
     async list() {
       const data = await fetchAll((f,t) => supabase.from('fk_motivos').select('*').order('codigo').range(f,t));
-      return toCamel(data);
+      const tr=(v)=> typeof v==="string" ? v.trim() : v;
+      return toCamel(data).map(r => ({ ...r, codigo: tr(r.codigo), descripcion: tr(r.descripcion) }));
     },
     async insert(row) {
       const { data, error } = await supabase.from('fk_motivos').insert(toSnake(row)).select().single();
@@ -110,7 +111,14 @@ export const db = {
   plotes: {
     async list() {
       const data = await fetchAll((f,t) => supabase.from('fk_plotes').select('*').order('codigo').order('lote').range(f,t));
-      return (toCamel(data) || []).map(r => ({ ...r, fechaCad: r.fechaCad }));
+      const tr=(v)=> typeof v==="string" ? v.trim() : v;
+      return (toCamel(data) || []).map(r => ({
+        ...r,
+        codigo: tr(r.codigo),
+        lote: tr(r.lote),
+        nombre: tr(r.nombre),
+        fechaCad: r.fechaCad,
+      }));
     },
     async insert(row) {
       const rec = { lote: row.lote, codigo: row.codigo, nombre: row.nombre, fecha_cad: row.fechaCad, temp_alm: row.tempAlm };
@@ -143,27 +151,32 @@ export const db = {
   facturas: {
     async list() {
       const data = await fetchAll((f,t) => supabase.from('fk_facturas').select('*').order('cod_cliente').order('no_factura').range(f,t));
+      // Trim defensivo: neutraliza espacios invisibles (copiados de Excel, datos
+      // cargados antes de existir la validación de importación, etc.) que romperían
+      // los filtros por igualdad estricta (===) usados para relacionar
+      // cliente → producto → lote → factura en toda la app.
+      const tr=(v)=> typeof v==="string" ? v.trim() : v;
       return (data || []).map(r => ({
         id:             r.id,
-        codCliente:     r.cod_cliente,
-        nombreCliente:  r.nombre_cliente,
-        noFactura:      r.no_factura,
-        codMaterial:    r.cod_material,
-        nombre:         r.nombre_material,
-        lote:           r.lote,
+        codCliente:     tr(r.cod_cliente),
+        nombreCliente:  tr(r.nombre_cliente),
+        noFactura:      tr(r.no_factura),
+        codMaterial:    tr(r.cod_material),
+        nombre:         tr(r.nombre_material),
+        lote:           tr(r.lote),
         cantidad:       r.cantidad,
         valor:          r.valor,
-        vendedor:       r.vendedor,
-        facturador:     r.facturador,
+        vendedor:       tr(r.vendedor),
+        facturador:     tr(r.facturador),
       }));
     },
     async insert(row) {
       const rec = {
-        cod_cliente: row.codCliente, nombre_cliente: row.nombreCliente,
-        no_factura: row.noFactura, cod_material: row.codMaterial,
-        nombre_material: row.nombre, lote: row.lote,
+        cod_cliente: String(row.codCliente||"").trim(), nombre_cliente: String(row.nombreCliente||"").trim(),
+        no_factura: String(row.noFactura||"").trim(), cod_material: String(row.codMaterial||"").trim(),
+        nombre_material: String(row.nombre||"").trim(), lote: String(row.lote||"").trim(),
         cantidad: row.cantidad, valor: row.valor,
-        vendedor: row.vendedor, facturador: row.facturador,
+        vendedor: String(row.vendedor||"").trim(), facturador: String(row.facturador||"").trim(),
       };
       const { data, error } = await supabase.from('fk_facturas').insert(rec).select().single();
       if (error) throw error;
@@ -174,11 +187,11 @@ export const db = {
     },
     async insertMany(rows) {
       const recs = rows.map(r => ({
-        cod_cliente: r.codCliente, nombre_cliente: r.nombreCliente,
-        no_factura: r.noFactura, cod_material: r.codMaterial,
-        nombre_material: r.nombre, lote: r.lote,
+        cod_cliente: String(r.codCliente||"").trim(), nombre_cliente: String(r.nombreCliente||"").trim(),
+        no_factura: String(r.noFactura||"").trim(), cod_material: String(r.codMaterial||"").trim(),
+        nombre_material: String(r.nombre||"").trim(), lote: String(r.lote||"").trim(),
         cantidad: r.cantidad, valor: r.valor,
-        vendedor: r.vendedor, facturador: r.facturador,
+        vendedor: String(r.vendedor||"").trim(), facturador: String(r.facturador||"").trim(),
       }));
       const { data, error } = await supabase.from('fk_facturas').insert(recs).select();
       if (error) throw error;
@@ -191,11 +204,11 @@ export const db = {
     },
     async update(id, row) {
       const rec = {
-        cod_cliente: row.codCliente, nombre_cliente: row.nombreCliente,
-        no_factura: row.noFactura, cod_material: row.codMaterial,
-        nombre_material: row.nombre, lote: row.lote,
+        cod_cliente: String(row.codCliente||"").trim(), nombre_cliente: String(row.nombreCliente||"").trim(),
+        no_factura: String(row.noFactura||"").trim(), cod_material: String(row.codMaterial||"").trim(),
+        nombre_material: String(row.nombre||"").trim(), lote: String(row.lote||"").trim(),
         cantidad: row.cantidad, valor: row.valor,
-        vendedor: row.vendedor, facturador: row.facturador,
+        vendedor: String(row.vendedor||"").trim(), facturador: String(row.facturador||"").trim(),
       };
       const { data, error } = await supabase.from('fk_facturas').update(rec).eq('id', id).select().single();
       if (error) throw error;
