@@ -219,13 +219,30 @@ export const db = {
 
   plotes: {
     // Fecha de caducidad de un lote específico — consulta puntual, indexada.
+    // Tolerante a espacios invisibles: trae los lotes del código y compara
+    // con trim en el cliente (datos antiguos pueden tener espacios residuales).
     async fechaCad(codigo, lote) {
-      const { data, error } = await supabase.from('fk_plotes')
-        .select('fecha_cad')
-        .eq('codigo', codigo).eq('lote', lote)
-        .limit(1);
+      const t=(v)=>String(v||'').trim();
+      let { data, error } = await supabase.from('fk_plotes')
+        .select('lote,fecha_cad')
+        .eq('codigo', t(codigo))
+        .limit(200);
       if (error) throw error;
-      return data && data[0] ? data[0].fecha_cad : "";
+      // Fallback: si el código guardado en plotes tiene espacios, el eq exacto
+      // no encuentra nada — reintenta con búsqueda parcial y filtra con trim.
+      if (!data || data.length === 0) {
+        const s = san(codigo);
+        if (s) {
+          const r2 = await supabase.from('fk_plotes')
+            .select('codigo,lote,fecha_cad')
+            .ilike('codigo', `%${s}%`)
+            .limit(200);
+          if (r2.error) throw r2.error;
+          data = (r2.data || []).filter(r => t(r.codigo) === t(codigo));
+        }
+      }
+      const row = (data || []).find(r => t(r.lote) === t(lote));
+      return row ? row.fecha_cad : "";
     },
     // Página para la pantalla de Maestros.
     async page({ page = 0, pageSize = 50, q = '' } = {}) {
