@@ -314,7 +314,11 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
 
   const selectLote=async(v)=>{
     let fv="";
-    if(v){ try{ fv=await db.plotes.fechaCad(l.codigo,v); }catch{} }
+    if(v){
+      try{ fv=await db.plotes.fechaCad(l.codigo,v); }
+      catch(e){ notify("Error al consultar fecha de vencimiento: "+e.message); }
+      if(!fv) notify(`⚠ El lote ${v} del material ${l.codigo} no tiene fecha de vencimiento en el maestro Producto-Lote. Verifica que ese lote esté cargado en Maestros → Producto-Lote.`,"warn");
+    }
     onChangeLine(i,{lote:v,fechaVenc:fv||"",facturaNo:"",vendedor:""});
   };
 
