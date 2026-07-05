@@ -328,18 +328,21 @@ export const db = {
       if (error) throw error;
       return [...new Set((data || []).map(r => trf(r.lote)).filter(Boolean))].sort();
     },
-    // Facturas del cliente para material+lote, con su vendedor.
+    // Facturas del cliente para material+lote, con vendedor y cantidad vendida.
     async facturasDe(codCliente, codMaterial, lote) {
       let query = supabase.from('fk_facturas')
-        .select('no_factura,vendedor')
+        .select('no_factura,vendedor,cantidad')
         .eq('cod_cliente', codCliente).eq('cod_material', codMaterial)
         .limit(500);
       if (lote) query = query.eq('lote', lote);
       const { data, error } = await query;
       if (error) throw error;
       const m = new Map();
-      (data || []).forEach(r => { const f = trf(r.no_factura); if (f && !m.has(f)) m.set(f, trf(r.vendedor) || ''); });
-      return [...m.entries()].map(([noFactura, vendedor]) => ({ noFactura, vendedor }));
+      (data || []).forEach(r => {
+        const f = trf(r.no_factura);
+        if (f && !m.has(f)) m.set(f, { vendedor: trf(r.vendedor) || '', cantidadVendida: r.cantidad });
+      });
+      return [...m.entries()].map(([noFactura, v]) => ({ noFactura, vendedor: v.vendedor, cantidadVendida: v.cantidadVendida }));
     },
     // Conteo rápido de líneas de factura del cliente (índice + head:true, no trae datos).
     async countByCliente(codCliente) {
