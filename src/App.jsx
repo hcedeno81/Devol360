@@ -194,6 +194,83 @@ function PredictiveInput({value,onChange,suggestions=[],placeholder,style,disabl
   );
 }
 
+// ── CLIENT PICKER (autocompletado con selección obligatoria de la lista) ──────
+// A diferencia de PredictiveInput, este NO permite texto libre: si lo escrito
+// no coincide EXACTO con una opción, el campo queda "sin cliente" (no dispara
+// carga de facturas/productos) y se marca en rojo hasta elegir una opción real.
+function ClientPicker({value,onChange,options,placeholder,style}) {
+  // options: [{cod, label}]
+  const [open,setOpen]=useState(false);
+  const [text,setText]=useState("");
+  const skipBlur=useRef(false);
+
+  // Sincroniza el texto mostrado con el valor seleccionado (código) desde afuera
+  useEffect(()=>{
+    const sel=options.find(o=>o.cod===value);
+    setText(sel?sel.label:"");
+  },[value,options]);
+
+  const norm=(v)=>(v||"").toLowerCase();
+  const filtered=text
+    ? options.filter(o=>norm(o.label).includes(norm(text))||norm(o.cod).includes(norm(text))).slice(0,15)
+    : options.slice(0,15);
+
+  const isValidText = options.some(o=>o.label===text);
+
+  const handleSelect=(o)=>{
+    skipBlur.current=true;
+    setText(o.label);
+    onChange(o.cod);
+    setOpen(false);
+    setTimeout(()=>{ skipBlur.current=false; },300);
+  };
+
+  const handleBlur=()=>{
+    if(skipBlur.current) return;
+    setOpen(false);
+    // Si lo escrito no coincide exactamente con una opción válida, se limpia
+    // la selección para no arrastrar un cliente "a medias" sin facturas asociadas.
+    if(!isValidText){
+      onChange("");
+      setText("");
+    }
+  };
+
+  return (
+    <div style={{position:"relative",width:style?.width||"100%"}}>
+      <input
+        style={{...style,width:"100%",boxSizing:"border-box",border:`1px solid ${value?C.accent:(text?C.danger:C.light)}`}}
+        value={text}
+        placeholder={placeholder}
+        autoComplete="off"
+        onChange={e=>{ setText(e.target.value); onChange(""); setOpen(true); }}
+        onFocus={()=>setOpen(true)}
+        onBlur={handleBlur}
+      />
+      {open&&filtered.length>0&&(
+        <div style={{position:"absolute",zIndex:1000,background:"#fff",border:`1px solid ${C.accent}`,borderRadius:6,boxShadow:"0 4px 16px rgba(0,0,0,.15)",maxHeight:240,overflowY:"auto",width:"max-content",minWidth:"100%",top:"calc(100% + 2px)",left:0}}>
+          {filtered.map(o=>(
+            <div key={o.cod} style={{padding:"7px 12px",cursor:"pointer",fontSize:12,borderBottom:`1px solid ${C.light}`,background:"#fff",whiteSpace:"nowrap"}}
+              onMouseDown={e=>{ e.preventDefault(); handleSelect(o); }}
+              onMouseEnter={e=>e.currentTarget.style.background="#eff6ff"}
+              onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+              <strong>{o.cod}</strong> — {o.label}
+            </div>
+          ))}
+        </div>
+      )}
+      {open&&filtered.length===0&&(
+        <div style={{position:"absolute",zIndex:1000,background:"#fff",border:`1px solid ${C.light}`,borderRadius:6,padding:"7px 12px",fontSize:12,color:C.gray,top:"calc(100% + 2px)",left:0,width:"max-content"}}>
+          Sin coincidencias
+        </div>
+      )}
+      {text&&!value&&!open&&(
+        <div style={{fontSize:11,color:C.danger,marginTop:2}}>⚠ Debes elegir un cliente de la lista.</div>
+      )}
+    </div>
+  );
+}
+
 // ── PRODUCT TABLE ─────────────────────────────────────────────────────────────
 function ProductHeader({calEditable}) {
   return (
@@ -393,6 +470,13 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
   const changeLine=useCallback((i,patch)=>setForm(f=>{ const ls=[...f.lineas]; ls[i]={...ls[i],...patch}; return{...f,lineas:ls}; }),[]);
 
+  // Opciones únicas de cliente derivadas del maestro de facturas: {cod, label}
+  const clienteOptions=useMemo(()=>(
+    [...new Map(facturas.map(f=>[f.codCliente,f.nombreCliente||f.codCliente])).entries()]
+      .map(([cod,label])=>({cod,label}))
+      .sort((a,b)=>a.label.localeCompare(b.label))
+  ),[facturas]);
+
   const submit=async()=>{
     if(guardando) return; // evita doble click → notas duplicadas
     // ── Validación cabecera ────────────────────────────────────────────────────
@@ -468,21 +552,20 @@ function NotaForm({user,users,motivos,plotes,facturas,setNotas,onBack}) {
             <label style={s.lbl}>📅 Fecha de creación</label>
             <div style={{...s.inpDis,padding:"5px 8px",borderRadius:4,fontSize:13}}>{fmtD(form.fecha)}</div>
           </div>
-          <div style={{flex:"0 0 160px"}}>
-            <label style={s.lbl}>Cód. Cliente *</label>
-            <select style={s.inp} value={form.codigoCliente}
-              onChange={e=>{ const v=e.target.value; const nombre=[...new Set(facturas.filter(f=>f.codCliente===v).map(f=>f.nombreCliente||""))].find(Boolean)||""; sf("codigoCliente",v); sf("nombreCliente",nombre); setForm(f=>({...f,lineas:pad([])})); }}>
-              <option value="">— Seleccionar —</option>
-              {[...new Set(facturas.map(f=>f.codCliente))].sort().map(c=><option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-          <div style={{flex:"2 1 200px"}}>
-            <label style={s.lbl}>Nombre del Cliente *</label>
-            <select style={s.inp} value={form.codigoCliente}
-              onChange={e=>{ const v=e.target.value; const nombre=[...new Set(facturas.filter(f=>f.codCliente===v).map(f=>f.nombreCliente||""))].find(Boolean)||""; sf("codigoCliente",v); sf("nombreCliente",nombre); setForm(f=>({...f,lineas:pad([])})); }}>
-              <option value="">— Seleccionar cliente —</option>
-              {[...new Map(facturas.map(f=>[f.codCliente,f.nombreCliente||f.codCliente])).entries()].sort((a,b)=>a[1].localeCompare(b[1])).map(([cod,nom])=><option key={cod} value={cod}>{nom}</option>)}
-            </select>
+          <div style={{flex:"2 1 320px"}}>
+            <label style={s.lbl}>Cliente *</label>
+            <ClientPicker
+              style={s.inp}
+              value={form.codigoCliente}
+              options={clienteOptions}
+              placeholder="Escribe código o nombre del cliente..."
+              onChange={v=>{
+                const opt=clienteOptions.find(o=>o.cod===v);
+                sf("codigoCliente",v);
+                sf("nombreCliente",opt?opt.label:"");
+                setForm(f=>({...f,lineas:pad([])}));
+              }}
+            />
           </div>
         </div>
         {(()=>{
@@ -753,7 +836,7 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
   );
 }
 
-// \u2500\u2500 DATOS MAESTROS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── DATOS MAESTROS ────────────────────────────────────────────────────────────
 // Esquema de cada maestro: cols = encabezados del CSV (en orden); fields = [clave, etiqueta, placeholder]
 // alineados 1:1 con cols; keyOf = clave para deduplicar; dateField = campo fecha (se normaliza a ISO).
 // Carga SheetJS dinámicamente desde CDN (funciona en StackBlitz, Vercel y el artifact de Claude).
@@ -931,7 +1014,7 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
   return (
     <div style={s.page}>
       <div style={{...s.card,borderTop:`4px solid ${C.primary}`}}>
-        <div style={s.title}>🗂\uFE0F Datos Maestros</div>
+        <div style={s.title}>🗂️ Datos Maestros</div>
         <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
           {Object.entries(MASTERS).map(([k,v])=><button key={k} style={s.btn(tab===k?C.primary:"#e5e7eb")} onClick={()=>{setTab(k);setImportResult(null);}}><span style={{color:tab===k?"#fff":C.gray}}>{v.label} ({stores[k][0].length})</span></button>)}
         </div>
@@ -947,13 +1030,13 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
           </div>
           {importResult&&(
             <div style={{marginTop:10,background:importResult.ok>0?"#f0fdf4":"#fef2f2",border:`1px solid ${importResult.ok>0?"#bbf7d0":"#fecaca"}`,borderRadius:6,padding:10}}>
-              {importResult.ok>0&&<div style={{color:"#166534",fontWeight:"bold",fontSize:13,marginBottom:4}}>\u2705 {importResult.ok} de {importResult.total||"?"} filas importadas correctamente.</div>}
-              {importResult.errors.map((e,i)=><div key={i} style={{fontSize:11,color:C.danger}}>\u2022 {e}</div>)}
+              {importResult.ok>0&&<div style={{color:"#166534",fontWeight:"bold",fontSize:13,marginBottom:4}}>✅ {importResult.ok} de {importResult.total||"?"} filas importadas correctamente.</div>}
+              {importResult.errors.map((e,i)=><div key={i} style={{fontSize:11,color:C.danger}}>• {e}</div>)}
             </div>
           )}
         </div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <div style={{fontWeight:"bold",color:C.primary}}>{M.label} \u2014 {data.length}</div>
+          <div style={{fontWeight:"bold",color:C.primary}}>{M.label} — {data.length}</div>
           <button style={s.btn()} onClick={()=>open()}>+ Nuevo manual</button>
         </div>
         <div style={{overflowX:"auto"}}>
@@ -968,7 +1051,7 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
               </tr>
             ))}</tbody>
           </table>
-          {data.length===0&&<div style={{textAlign:"center",padding:24,color:C.gray}}>Sin registros. Usa \u201c+ Nuevo manual\u201d o la carga masiva.</div>}
+          {data.length===0&&<div style={{textAlign:"center",padding:24,color:C.gray}}>Sin registros. Usa "+ Nuevo manual" o la carga masiva.</div>}
         </div>
       </div>
       {confirmDelAll&&(
@@ -1004,7 +1087,7 @@ function DatosMaestros({motivos,setMotivos,plotes,setPlotes,facturas,setFacturas
       {modal&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}}>
           <div style={{background:"#fff",borderRadius:8,padding:24,width:400,boxShadow:"0 4px 20px rgba(0,0,0,.2)"}}>
-            <div style={{fontWeight:"bold",fontSize:15,color:C.primary,marginBottom:14}}>{modal.item?"Editar":"Nuevo"} \u2014 {M.label}</div>
+            <div style={{fontWeight:"bold",fontSize:15,color:C.primary,marginBottom:14}}>{modal.item?"Editar":"Nuevo"} — {M.label}</div>
             {M.fields.map(([fk,label,ph])=>(
               <div key={fk}><label style={s.lbl}>{label}</label>
                 <input style={{...s.inp,marginBottom:10}} type={fk===M.dateField?"date":"text"} value={form[fk]||""} onChange={e=>setForm(f=>({...f,[fk]:e.target.value}))} placeholder={fk===M.dateField?"":ph}/></div>
