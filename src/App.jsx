@@ -701,7 +701,6 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
   const isGer    = rol==="gerente";
 
   const canBodEdit    = isBod && nota.estado==="en_bodega";
-  const canBodAprobar = isBod && nota.estado==="en_bodega";
   const canBodCorregir= isBod && nota.estado==="en_bodega";
   const canRRVVConfirm= isRRVV && nota.estado==="corregida";
   const canCalAprobar = isCal && nota.estado==="en_calidad";
@@ -825,17 +824,30 @@ function NotaDetail({nota,user,setNotas,onBack,plotes,facturas=[]}) {
           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
             <button style={s.bOut()} onClick={onBack}>← Volver</button>
 
-            {canBodCorregir&&<button style={s.btn(C.warning)} onClick={()=>{
-              const changes=detectChanges(workForm,mf);
-              const log=changes.length>0
-                ? `Bodeguero corrigió → pendiente confirmación RRVV | ${changes.join(" | ")}`
-                : "Bodeguero corrigió → pendiente confirmación RRVV (sin cambios en materiales)";
-              upd({estado:"corregida",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push(log)]});onBack();
-            }}>✏️ Corregir → Enviar a RRVV</button>}
-
-            {canBodAprobar&&<button style={s.btn(STC.en_bodega)} onClick={()=>{
-              upd({estado:"en_calidad",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push("Bodeguero aprobó → Inspector de Calidad")]});onBack();
-            }}>✅ Aprobar → Calidad</button>}
+            {canBodCorregir&&(()=>{
+              const changes=detectChanges(nota.form,mf);
+              const haycambios=changes.length>0;
+              return (
+                <>
+                  {haycambios&&(
+                    <div style={{fontSize:12,color:C.warning,background:"#fffbeb",border:`1px solid #fde68a`,borderRadius:6,padding:"6px 10px"}}>
+                      ✏️ Hay cambios — debes enviar al RRVV para su confirmación antes de aprobar.
+                    </div>
+                  )}
+                  <button style={s.btn(C.warning)} onClick={()=>{
+                    const log=haycambios
+                      ? `Bodeguero corrigió → pendiente confirmación RRVV | ${changes.join(" | ")}`
+                      : "Bodeguero corrigió → pendiente confirmación RRVV (sin cambios en materiales)";
+                    upd({estado:"corregida",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push(log)]});onBack();
+                  }}>✏️ Corregir → Enviar a RRVV</button>
+                  {!haycambios&&(
+                    <button style={s.btn(STC.en_bodega)} onClick={()=>{
+                      upd({estado:"en_calidad",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push("Bodeguero aprobó → Inspector de Calidad")]});onBack();
+                    }}>✅ Aprobar → Calidad</button>
+                  )}
+                </>
+              );
+            })()}
 
             {canRRVVConfirm&&!showRechazo&&(
               <>
