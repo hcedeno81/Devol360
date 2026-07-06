@@ -963,7 +963,7 @@ function NotaDetail({nota,user,setNotas,onBack}) {
             <button style={s.bOut()} onClick={onBack}>← Volver</button>
 
             {canBodCorregir&&(()=>{
-              const changes=detectChanges(nota.form,mf);
+              const changes=detectChanges(workForm,mf);
               const haycambios=changes.length>0;
               return (
                 <>
