@@ -99,6 +99,19 @@ const mkForm = ()=>({fecha:"",codigoCliente:"",nombreCliente:"",tipoDevolucion:"
 const fmtD   = (iso)=>{ if(!iso) return ""; const p=iso.split("-"); if(p.length!==3) return iso; return `${p[2]}/${p[1]}/${p[0]}`; };
 const cloneForm=(f)=>({...f,lineas:f.lineas.map(l=>({...l}))});
 
+// Verifica si alguna línea supera el 15% de la cantidad vendida en la factura.
+// Devuelve la observación de advertencia, o "" si todo está dentro del límite.
+const check15=(lineas)=>{
+  const exceden=(lineas||[]).filter(l=>{
+    const cv=parseFloat(l.cantidadVendida); const cd=parseFloat(l.cantidad);
+    return !isNaN(cv)&&cv>0&&!isNaN(cd)&&cd>cv*0.15;
+  });
+  if(exceden.length===0) return "";
+  return "⚠ Supera 15%: "+exceden.map(l=>`${l.nombre||l.codigo} (Factura ${l.facturaNo}): devuelve ${l.cantidad} de ${l.cantidadVendida} (${Math.round((parseFloat(l.cantidad)/parseFloat(l.cantidadVendida))*100)}%)`).join("; ");
+};
+// Combina una advertencia de 15% con la observación existente (si la hay).
+const merge15=(obs,warn)=>{ if(!warn) return obs||""; return warn+(obs?` | ${obs}`:""); };
+
 // Normaliza una fecha (DD/MM/AAAA, AAAA-MM-DD, DD-MM-AAAA...) a ISO AAAA-MM-DD.
 const toISO=(str)=>{
   if(!str) return "";
@@ -618,17 +631,10 @@ function NotaForm({user,users,motivos,setNotas,onBack}) {
     });
     if(erroresLinea.length>0) return setSubmitErr(erroresLinea[0]);
     // ── Advertencia 15%: se registra automáticamente en Observaciones ─────────
-    const lineas15=lineasActivas.filter(l=>{
-      const cv=parseFloat(l.cantidadVendida); const cd=parseFloat(l.cantidad);
-      return !isNaN(cv)&&cv>0&&!isNaN(cd)&&cd>cv*0.15;
-    });
-    let formFinal={...form};
-    if(lineas15.length>0){
-      const nota15=lineas15.map(l=>`${l.nombre||l.codigo} (Factura ${l.facturaNo}): devuelve ${l.cantidad} de ${l.cantidadVendida} (${Math.round((parseFloat(l.cantidad)/parseFloat(l.cantidadVendida))*100)}%)`).join("; ");
-      const prefijo=`⚠ Supera 15%: ${nota15}`;
-      // Agrega la advertencia al inicio de la observación existente, separada por " | " si ya había texto.
-      formFinal={...formFinal,observacion:prefijo+(form.observacion?` | ${form.observacion}`:"")};
-    }
+    const warn15=check15(lineasActivas);
+    const formFinal=warn15
+      ? {...form,observacion:merge15(form.observacion,warn15)}
+      : form;
     setSubmitErr("");
     const rrvv=users.find(u=>u.id===parseInt(asig));
     setGuardando(true);
@@ -778,7 +784,12 @@ function NotaDetail({nota,user,setNotas,onBack}) {
   // modActual cuando existe (Inspector, Facturador necesitan ver el estado actual).
   const rol=user.role;
   const isBodeguero = isBodegueroRole(rol);
-  const workForm = isBodeguero ? nota.form : (nota.modActual||nota.form);
+  // workForm: qué versión ve cada rol al abrir la nota en modo edición.
+  // · Primera vez en bodega (modActual=null): nota.form — original del RRVV.
+  // · Bodeguero tras aprobación del RRVV (modActual≠null): modActual — corrección validada por RRVV.
+  // · Bodeguero tras rechazo (modActual=null borrado por rechazo): nota.form — vuelve al original.
+  // · Inspector/Facturador: siempre modActual si existe (versión más reciente).
+  const workForm = nota.modActual||nota.form;
   const [mf,setMf]=useState(cloneForm(workForm));
   const [com,setCom]=useState("");
   const [motivoRechazo,setMotivoRechazo]=useState("");
@@ -979,7 +990,21 @@ function NotaDetail({nota,user,setNotas,onBack}) {
             {canRRVVConfirm&&!showRechazo&&(
               <>
                 <button style={{...s.btn(C.success),opacity:busy?0.6:1}} disabled={busy} onClick={()=>{
-                  act({estado:"en_bodega",historial:[...nota.historial,push("RRVV confirmó la corrección → regresa a bodega")]});
+                  // El RRVV aprueba la corrección del bodeguero.
+                  // La nota REGRESA A BODEGA con los datos corregidos aplicados
+                  // (modActual se convierte en la versión de trabajo).
+                  // Si las líneas corregidas superan el 15%, queda en observaciones.
+                  const formCorregido=cloneForm(nota.modActual||nota.form);
+                  const warn15=check15(formCorregido.lineas);
+                  if(warn15){
+                    formCorregido.observacion=merge15(formCorregido.observacion,warn15);
+                  }
+                  act({
+                    estado:"en_bodega",
+                    modActual:formCorregido,
+                    motivoRechazo:null,
+                    historial:[...nota.historial,push("RRVV aprobó la corrección → regresa a Bodega con datos actualizados")]
+                  });
                 }}>✔ Confirmar corrección</button>
                 <button style={s.btn(C.danger)} onClick={()=>setShowRechazo(true)}>✖ Rechazar corrección</button>
               </>
