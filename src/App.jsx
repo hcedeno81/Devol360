@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { db } from "./supabase";
+import { printND } from "./printND";
 
 // ── ROLES ─────────────────────────────────────────────────────────────────────
 const ROLES = [
@@ -961,6 +962,13 @@ function NotaDetail({nota,user,setNotas,onBack}) {
           )}
           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
             <button style={s.bOut()} onClick={onBack}>← Volver</button>
+
+            {/* Hoja de trabajo para la recepción física en bodega (A4 horizontal). */}
+            {(isBodeguero||rol==="admin")&&(
+              <button style={s.bOut(C.accent)} onClick={()=>printND({nota,form:dispForm,user})}>
+                🖨️ Imprimir Nota de Devolución
+              </button>
+            )}
 
             {canBodCorregir&&(()=>{
               const changes=detectChanges(workForm,mf);
