@@ -805,6 +805,7 @@ function NotaDetail({nota,user,setNotas,onBack}) {
   const [com,setCom]=useState("");
   const [motivoRechazo,setMotivoRechazo]=useState("");
   const [showRechazo,setShowRechazo]=useState(false);
+  const [showReexport,setShowReexport]=useState(false);
 
   const changeLine=useCallback((i,patch)=>setMf(f=>{ const ls=[...f.lineas]; ls[i]={...ls[i],...patch}; return{...f,lineas:ls}; }),[]);
   const push=(a)=>({accion:`${a}${com?": "+com:""}`,usuario:user.name,fecha:new Date().toLocaleString()});
@@ -843,13 +844,17 @@ function NotaDetail({nota,user,setNotas,onBack}) {
   const canBodCorregir= isBod && nota.estado==="en_bodega";
   const canRRVVConfirm= isRRVV && nota.estado==="corregida";
   const canCalAprobar = isCal && nota.estado==="en_calidad";
-  const canFacEdit    = isFac && nota.estado==="en_facturacion";
-  const canFacExportar= isFac && nota.estado==="en_facturacion";
+  // El facturador es SOLO LECTURA: su única acción es exportar a SAP.
+  // (canFacEdit / isFacEditing se eliminaron a propósito — no debe existir
+  //  ninguna ruta de edición para este rol.)
+  const canFacExportar= isFac && nota.estado===NOTA_EXPORTABLE;
   const canGerConfirm = isGer && nota.estado==="enviada_sap";
+  // Reexportación autorizada: solo el administrador, sobre ND ya enviadas.
+  const canReexportar = rol==="admin" && yaExportada(nota);
 
   const isEditing    = canBodCorregir;
   const isCalEditing = canCalAprobar;
-  const isFacEditing = canFacEdit;
+  const isFacEditing = false;
 
   const detectChanges=(orig,mod)=>{
     const ch=[];
@@ -888,8 +893,8 @@ function NotaDetail({nota,user,setNotas,onBack}) {
       : null,
     corregida: null,
     en_calidad:{bg:"#f0fdf4",border:"#bbf7d0",txt:"#166534",jsx:<span>🔍 Define las cantidades de Stock y Destrucción por línea. La suma debe ser igual a la cantidad devuelta.</span>},
-    en_facturacion:{bg:"#fffbeb",border:"#fde68a",txt:"#92400e",jsx:<span>💰 Verifica y corrige los números de factura por línea si es necesario. Luego <b>Exporta a SAP</b>.</span>},
-    enviada_sap:{bg:"#f0fdf4",border:"#bbf7d0",txt:"#166534",jsx:<span>📤 Nota enviada a SAP. Una vez aprobada en el sistema SAP, confirma aquí para actualizar el estado.</span>},
+    en_facturacion:{bg:"#fffbeb",border:"#fde68a",txt:"#92400e",jsx:<span>🧾 Revisa la información de la ND. Cuando esté conforme, pulsa <b>Exportar a SAP</b>. La información es de solo lectura.</span>},
+    enviada_sap:{bg:"#f0fdf4",border:"#bbf7d0",txt:"#166534",jsx:<span>📤 Nota <strong>ya exportada a SAP</strong>. No puede volver a exportarse. Una vez aprobada en SAP, el gerente confirma aquí.</span>},
     aprobada_sap:{bg:"#f0fdf4",border:"#bbf7d0",txt:"#166534",jsx:<span>✅ Esta nota fue aprobada en SAP. Solo lectura.</span>},
   };
   const al=alertas[nota.estado];
@@ -964,7 +969,7 @@ function NotaDetail({nota,user,setNotas,onBack}) {
         </div>
 
         <div style={{marginTop:14,padding:12,background:"#f9fafb",borderRadius:6}}>
-          {!showRechazo&&(
+          {!showRechazo&&!isFac&&(
             <>
               <label style={s.lbl}>Comentario (opcional)</label>
               <input style={{...s.inp,marginBottom:10}} value={com} onChange={e=>setCom(e.target.value)} placeholder="Agregar comentario..."/>
@@ -1054,9 +1059,28 @@ function NotaDetail({nota,user,setNotas,onBack}) {
               act({estado:"en_facturacion",modActual:cloneForm(mf),historial:[...nota.historial,push("Inspector aprobó con destinos → Facturador")]});
             }}>✅ Aprobar → Facturador</button>}
 
-            {canFacExportar&&<button disabled={busy} style={{...s.btn(STC.en_facturacion),opacity:busy?0.6:1}} onClick={()=>{
-              act({estado:"enviada_sap",registroFinal:cloneForm(mf),modActual:cloneForm(mf),historial:[...nota.historial,push("Facturador exportó a SAP — Excel generado")]});
+            {canFacExportar&&<button disabled={busy} style={{...s.btn(C.success),opacity:busy?0.6:1}} onClick={async()=>{
+              if(busy) return;
+              setBusy(true);
+              try{
+                const {archivo,resultados}=await exportarNotasSAP([nota],user,setNotas);
+                const r=resultados[0];
+                if(r.ok) notify(`✅ ${nota.ndv} exportada a SAP.\nArchivo: ${archivo}`,"success");
+                else     notify(`❌ No se exportó ${nota.ndv}.\n${r.error}`,"warn");
+                onBack();
+              }catch(e){ notify("Error al exportar: "+e.message); }
+              finally{ setBusy(false); }
             }}>📤 Exportar a SAP</button>}
+
+            {isFac&&yaExportada(nota)&&(
+              <span style={{...s.bdg(C.gray),padding:"6px 12px"}}>
+                🔒 Ya exportada a SAP — solo lectura
+              </span>
+            )}
+
+            {canReexportar&&<button disabled={busy} style={{...s.bOut(C.warning),opacity:busy?0.6:1}} onClick={()=>setShowReexport(true)}>
+              🔁 Reexportar a SAP (autorización)
+            </button>}
 
             {canGerConfirm&&<button disabled={busy} style={{...s.btn(STC.aprobada_sap),opacity:busy?0.6:1}} onClick={()=>{
               act({estado:"aprobada_sap",historial:[...nota.historial,push("Gerente confirmó aprobación en SAP ✓")]});
@@ -1064,6 +1088,33 @@ function NotaDetail({nota,user,setNotas,onBack}) {
           </div>
         </div>
       </div>
+
+      {showReexport&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300}}>
+          <div style={{background:"#fff",borderRadius:10,padding:28,width:400,boxShadow:"0 8px 32px rgba(0,0,0,.25)",textAlign:"center"}}>
+            <div style={{fontSize:32,marginBottom:8}}>🔁</div>
+            <div style={{fontWeight:"bold",fontSize:15,color:C.warning,marginBottom:8}}>Reexportar {nota.ndv} a SAP</div>
+            <div style={{fontSize:13,color:C.gray,marginBottom:8}}>
+              Esta ND <strong>ya fue exportada</strong>. Se generará el archivo de nuevo sin cambiar su estado.
+            </div>
+            <div style={{fontSize:12,color:"#92400e",background:"#fffbeb",border:`1px solid #fde68a`,borderRadius:6,padding:"8px 12px",marginBottom:18,textAlign:"left"}}>
+              ⚠ Cargar dos veces el mismo archivo en SAP puede duplicar el documento. Úsalo solo si la carga anterior falló. Quedará registrado en el historial a tu nombre.
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+              <button style={s.bOut()} onClick={()=>setShowReexport(false)}>Cancelar</button>
+              <button style={{...s.btn(C.warning),opacity:busy?0.6:1}} disabled={busy} onClick={async()=>{
+                setBusy(true);
+                try{
+                  const archivo=await reexportarNotaSAP(nota,user,setNotas);
+                  notify(`🔁 Archivo regenerado: ${archivo}`,"success");
+                  setShowReexport(false);
+                }catch(e){ notify("Error al reexportar: "+e.message); }
+                finally{ setBusy(false); }
+              }}>Sí, reexportar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1625,19 +1676,109 @@ function Stats({notas,user}) {
   );
 }
 
-// ── EXPORT ────────────────────────────────────────────────────────────────────
+// ── EXPORTACIÓN A SAP ─────────────────────────────────────────────────────────
+// UNA SOLA fuente de verdad para el archivo que se carga en SAP, usada tanto por
+// la exportación individual como por la masiva.
+// Cuando llegue la plantilla corporativa .xlsx, SOLO se reemplaza
+// generarArchivoSAP(): los flujos, las validaciones y la trazabilidad no cambian.
+
+// Estado en el que una ND puede exportarse. Cualquier otro se rechaza.
+const NOTA_EXPORTABLE = "en_facturacion";
+// Una ND ya exportada no se vuelve a exportar (salvo reexportación autorizada del admin).
+const yaExportada = (n)=>n.estado==="enviada_sap"||n.estado==="aprobada_sap";
+
+const SAP_HEADERS=["NDV","TipoProducto","Ciudad","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Destino","Stock","Destrucción","Estado"];
+
+// Filas de una ND: una por cada línea de producto con material.
+const filasSAPDeNota=(n)=>{
+  const f=n.registroFinal||n.modActual||n.form;
+  const tp=n.tipoProducto==="controlado"?"Controlado":"Normal";
+  const cd=n.ciudad==="quito"?"Quito":"Guayaquil";
+  return f.lineas.filter(l=>l.nombre).map(l=>[
+    n.ndv,tp,cd,f.nombreCliente,f.codigoCliente,fmtD(f.fecha),f.tipoDevolucion,f.descripcionMotivo,n.rrvvNombre,
+    l.codigo,l.nombre,l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),
+    l.facturaNo,l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]||n.estado,
+  ]);
+};
+
+const descargarCSV=(rows,nombre)=>{
+  const csv=rows.map(r=>r.map(c=>`"${String(c==null?"":c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const a=document.createElement("a");
+  a.href="data:text/csv;charset=utf-8,\uFEFF"+encodeURIComponent(csv);
+  a.download=nombre; a.click();
+};
+
+// Nombre único del archivo — queda registrado en el historial de cada ND
+// para poder rastrear después qué archivo contenía qué notas.
+const nombreArchivoSAP=()=>{
+  const d=new Date(); const p=(x)=>String(x).padStart(2,"0");
+  return `SAP_ND_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.csv`;
+};
+
+// ⬅ ÚNICO punto a reemplazar cuando llegue la plantilla corporativa de SAP.
+const generarArchivoSAP=(notas,nombre)=>{
+  const rows=[SAP_HEADERS];
+  notas.forEach(n=>rows.push(...filasSAPDeNota(n)));
+  descargarCSV(rows,nombre);
+  return nombre;
+};
+
+// Exporta un conjunto de ND. Devuelve {archivo, resultados[]}.
+// ORDEN DELIBERADO: primero se marca cada ND en la base y solo al final se
+// genera el archivo, y SOLO con las que se marcaron bien. Así nunca se entrega
+// a SAP un archivo con notas que quedaron sin registrar como exportadas.
+async function exportarNotasSAP(seleccion,user,setNotas){
+  const archivo=nombreArchivoSAP();
+  const exportadas=[]; const resultados=[];
+  for(const n of seleccion){
+    // Validación de estado: evita doble exportación y estados no válidos.
+    if(n.estado!==NOTA_EXPORTABLE){
+      resultados.push({ndv:n.ndv,ok:false,
+        error:yaExportada(n)?`Ya fue exportada (${STL[n.estado]}). No se exporta de nuevo.`
+                            :`Estado no exportable: ${STL[n.estado]||n.estado}.`});
+      continue;
+    }
+    const registroFinal=cloneForm(n.modActual||n.form);
+    const entry={accion:`Exportada a SAP — archivo ${archivo}`,usuario:user.name,fecha:new Date().toLocaleString()};
+    const patch={estado:"enviada_sap",registroFinal,modActual:registroFinal,historial:[...n.historial,entry]};
+    try{
+      // Bloqueo optimista: solo se marca si sigue en "en_facturacion".
+      await db.notas.update(n.id,patch,NOTA_EXPORTABLE);
+      setNotas(prev=>prev.map(x=>x.id===n.id?{...x,...patch}:x));
+      exportadas.push({...n,...patch});
+      resultados.push({ndv:n.ndv,ok:true});
+    }catch(e){
+      resultados.push({ndv:n.ndv,ok:false,
+        error:e.message==="CONFLICT"
+          ?"Otro usuario cambió el estado de esta ND mientras exportabas. No se exportó."
+          :`Error al registrar en la base: ${e.message}`});
+    }
+  }
+  if(exportadas.length>0) generarArchivoSAP(exportadas,archivo);
+  return {archivo:exportadas.length>0?archivo:null,resultados};
+}
+
+// Reexportación AUTORIZADA (solo admin): vuelve a generar el archivo de una ND
+// ya enviada, sin alterar su estado, y deja constancia en el historial.
+async function reexportarNotaSAP(nota,user,setNotas){
+  const archivo=nombreArchivoSAP();
+  generarArchivoSAP([nota],archivo);
+  const entry={accion:`Reexportada a SAP (autorización de administrador) — archivo ${archivo}`,usuario:user.name,fecha:new Date().toLocaleString()};
+  const patch={historial:[...nota.historial,entry]};
+  try{
+    await db.notas.update(nota.id,patch,nota.estado);
+    setNotas(prev=>prev.map(x=>x.id===nota.id?{...x,...patch}:x));
+  }catch(e){ notify("El archivo se generó, pero no se pudo registrar en el historial: "+e.message,"warn"); }
+  return archivo;
+}
+
+// Export histórico del administrador: todas las ND ya enviadas o aprobadas.
 function exportCSV(notas) {
-  const rows=[["NDV","TipoProducto","Ciudad","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Destino","Stock","Destrucción","Estado"]];
-  notas.filter(n=>["enviada_sap","aprobada_sap"].includes(n.estado)).forEach(n=>{
-    const f=n.registroFinal||n.modActual||n.form;
-    const tp=n.tipoProducto==="controlado"?"Controlado":"Normal";
-    const cd=n.ciudad==="quito"?"Quito":"Guayaquil";
-    f.lineas.filter(l=>l.nombre).forEach(l=>{
-      rows.push([n.ndv,tp,cd,f.nombreCliente,f.codigoCliente,fmtD(f.fecha),f.tipoDevolucion,f.descripcionMotivo,n.rrvvNombre,l.codigo,l.nombre,l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),l.facturaNo,l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]]);
-    });
-  });
-  const csv=rows.map(r=>r.map(c=>`"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
-  const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,\uFEFF"+encodeURIComponent(csv);a.download="devoluciones_sap.csv";a.click();
+  const elegidas=notas.filter(n=>["enviada_sap","aprobada_sap"].includes(n.estado));
+  if(elegidas.length===0){ notify("No hay notas enviadas o aprobadas en SAP para exportar.","warn"); return; }
+  const rows=[SAP_HEADERS];
+  elegidas.forEach(n=>rows.push(...filasSAPDeNota(n)));
+  descargarCSV(rows,"devoluciones_sap.csv");
 }
 
 // ── HEADER ────────────────────────────────────────────────────────────────────
@@ -1650,7 +1791,8 @@ function Header({user,setView,notas,onLogout}) {
       <div style={{flex:1,fontSize:12}}>Sistema de Devoluciones</div>
       <div style={{fontSize:12,display:"flex",alignItems:"center",gap:6}}>👤 {user.name} <span style={s.bdg(rc(user.role))}>{ROLES.find(r=>r.value===user.role)?.label}</span></div>
       {user.role==="admin"&&<><button style={s.btn("#1e40af")} onClick={()=>setView("maestros")}>🗂️ Maestros</button><button style={s.btn("#1e3a6e")} onClick={()=>setView("usuarios")}>👥 Usuarios</button><button style={s.btn(C.success)} onClick={()=>exportCSV(notas)}>⬇ Exportar SAP</button></>}
-      {user.role==="facturador"&&<button style={s.btn(C.success)} onClick={()=>exportCSV(notas)}>⬇ Exportar SAP</button>}
+      {/* El facturador ya no exporta desde aquí: sus únicas vías son la
+          exportación masiva con selección y la individual desde el detalle. */}
       <button style={{...s.btn("#ffffff33"),marginLeft:4}} onClick={onLogout}>Salir</button>
     </div>
   );
@@ -1679,6 +1821,12 @@ export default function App() {
 
   const canCreate=user?.role==="rrvv";
   const [refreshing,setRefreshing]=useState(false);
+
+  // ── Exportación SAP del facturador ────────────────────────────────────────
+  const [selIds,setSelIds]         = useState([]);   // ND marcadas con checkbox
+  const [showConfirmExp,setConfExp]= useState(false);
+  const [exporting,setExporting]   = useState(false);
+  const [expResult,setExpResult]   = useState(null); // {archivo, resultados[]}
 
   // Recarga la lista de notas desde la base — clave con varios usuarios trabajando
   // a la vez: sin esto, un usuario no vería notas creadas o movidas por otros.
@@ -1726,6 +1874,27 @@ export default function App() {
     return [...list].sort((a,b)=>b.id-a.id);
   },[notas,user,activeTab]);
 
+  // Al cambiar de carpeta, la selección previa deja de tener sentido.
+  useEffect(()=>{ setSelIds([]); setExpResult(null); },[activeTab]);
+
+  // ND de la vista actual que SÍ pueden exportarse (evita seleccionar las ya enviadas).
+  const exportables=useMemo(()=>filteredNotas.filter(n=>n.estado===NOTA_EXPORTABLE),[filteredNotas]);
+  const esFacturador=user?.role==="facturador";
+  const todasSel=exportables.length>0&&exportables.every(n=>selIds.includes(n.id));
+  const toggleTodas=()=>setSelIds(todasSel?[]:exportables.map(n=>n.id));
+  const toggleUna=(id)=>setSelIds(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
+  const notasSeleccionadas=notas.filter(n=>selIds.includes(n.id));
+
+  const ejecutarExportMasiva=async()=>{
+    if(exporting) return;
+    setExporting(true);
+    try{
+      const r=await exportarNotasSAP(notasSeleccionadas,user,setNotas);
+      setExpResult(r); setSelIds([]); setConfExp(false);
+    }catch(e){ notify("Error en la exportación: "+e.message); }
+    finally{ setExporting(false); }
+  };
+
   if(loading) return (
     <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
       <div style={{fontSize:36}}>⏳</div>
@@ -1770,19 +1939,59 @@ export default function App() {
         <div style={s.card}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
             <div style={s.title}>📄 Notas de Devolución</div>
-            <div style={{display:"flex",gap:8}}>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
               <button style={{...s.bOut(),opacity:refreshing?0.6:1}} onClick={reloadNotas} disabled={refreshing}>{refreshing?"⏳":"🔄 Actualizar"}</button>
+              {esFacturador&&(
+                <button
+                  style={{...s.btn(C.success),opacity:(selIds.length===0||exporting)?0.5:1,cursor:selIds.length===0?"not-allowed":"pointer"}}
+                  disabled={selIds.length===0||exporting}
+                  title={selIds.length===0?"Selecciona al menos una ND en la columna de la izquierda":"Exportar las ND seleccionadas"}
+                  onClick={()=>setConfExp(true)}>
+                  {exporting?"⏳ Exportando...":`📤 Exportación SAP Masiva${selIds.length?` (${selIds.length})`:""}`}
+                </button>
+              )}
               {canCreate&&<button style={s.btn()} onClick={()=>setView("nueva")}>+ Nueva Nota</button>}
             </div>
           </div>
+          {expResult&&(
+            <div style={{marginBottom:12,border:`1px solid ${expResult.resultados.some(r=>!r.ok)?"#fde68a":"#bbf7d0"}`,background:expResult.resultados.some(r=>!r.ok)?"#fffbeb":"#f0fdf4",borderRadius:8,padding:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{fontWeight:"bold",fontSize:13,color:"#166534"}}>
+                  Resultado de la exportación — {expResult.resultados.filter(r=>r.ok).length} exitosa(s), {expResult.resultados.filter(r=>!r.ok).length} con error
+                </div>
+                <button style={s.btn(C.gray,true)} onClick={()=>setExpResult(null)}>Cerrar</button>
+              </div>
+              {expResult.archivo&&<div style={{fontSize:12,color:C.gray,marginBottom:6}}>📄 Archivo generado: <strong>{expResult.archivo}</strong></div>}
+              {expResult.resultados.map((r,i)=>(
+                <div key={i} style={{fontSize:12,marginBottom:2,color:r.ok?C.success:C.danger}}>
+                  {r.ok?"✅":"❌"} <strong>{r.ndv}</strong>{r.ok?" — exportada":` — ${r.error}`}
+                </div>
+              ))}
+            </div>
+          )}
           {filteredNotas.length===0?(
             <div style={{textAlign:"center",padding:40,color:C.gray}}>No hay notas en esta categoría.{canCreate&&<div style={{marginTop:8}}><button style={s.btn()} onClick={()=>setView("nueva")}>Crear primera nota</button></div>}</div>
           ):(
             <div style={{overflowX:"auto"}}>
               <table style={s.tbl}>
-                <thead><tr>{["Nº Nota","Cliente","Fecha","Ciudad",isBodegueroRole(user.role)?"Vendedor":"RRVV","Creada por","Estado",""].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
+                <thead><tr>
+                  {esFacturador&&(
+                    <th style={{...s.th,width:34,textAlign:"center"}}>
+                      <input type="checkbox" checked={todasSel} disabled={exportables.length===0}
+                        onChange={toggleTodas} title="Seleccionar todas las exportables"/>
+                    </th>
+                  )}
+                  {["Nº Nota","Cliente","Fecha","Ciudad",isBodegueroRole(user.role)?"Vendedor":"RRVV","Creada por","Estado",""].map((h,i)=><th key={i} style={s.th}>{h}</th>)}
+                </tr></thead>
                 <tbody>{filteredNotas.map(n=>(
-                  <tr key={n.id}>
+                  <tr key={n.id} style={{background:selIds.includes(n.id)?"#eff6ff":"transparent"}}>
+                    {esFacturador&&(
+                      <td style={{...s.td,textAlign:"center"}}>
+                        {n.estado===NOTA_EXPORTABLE
+                          ? <input type="checkbox" checked={selIds.includes(n.id)} onChange={()=>toggleUna(n.id)}/>
+                          : <span title="Solo se pueden exportar las ND en Facturación" style={{color:C.light}}>—</span>}
+                      </td>
+                    )}
                     <td style={{...s.td,fontWeight:"bold",color:C.primary}}>{n.ndv}</td>
                     <td style={s.td}>{n.form.nombreCliente}</td>
                     <td style={s.td}>{fmtD(n.form.fecha)}</td>
@@ -1802,6 +2011,33 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {showConfirmExp&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300}}>
+          <div style={{background:"#fff",borderRadius:10,padding:28,width:420,boxShadow:"0 8px 32px rgba(0,0,0,.25)"}}>
+            <div style={{fontSize:32,marginBottom:8,textAlign:"center"}}>📤</div>
+            <div style={{fontWeight:"bold",fontSize:15,color:C.primary,marginBottom:10,textAlign:"center"}}>
+              ¿Exportar {selIds.length} nota(s) a SAP?
+            </div>
+            <div style={{maxHeight:170,overflowY:"auto",border:`1px solid ${C.light}`,borderRadius:6,padding:"8px 10px",marginBottom:12}}>
+              {notasSeleccionadas.map(n=>(
+                <div key={n.id} style={{fontSize:12,marginBottom:3}}>
+                  <strong style={{color:C.primary}}>{n.ndv}</strong> — {n.form.nombreCliente}
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:12,color:"#92400e",background:"#fffbeb",border:`1px solid #fde68a`,borderRadius:6,padding:"8px 12px",marginBottom:16}}>
+              Se generará un archivo con estas ND y pasarán a <strong>Enviada a SAP</strong>. Después de esto no podrán exportarse de nuevo.
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+              <button style={s.bOut()} onClick={()=>setConfExp(false)} disabled={exporting}>Cancelar</button>
+              <button style={{...s.btn(C.success),opacity:exporting?0.6:1}} onClick={ejecutarExportMasiva} disabled={exporting}>
+                {exporting?"⏳ Exportando...":"✅ Sí, exportar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
