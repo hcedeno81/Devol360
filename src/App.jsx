@@ -8,15 +8,24 @@ const ROLES = [
   { value:"rrvv",           label:"RRVV",                   desc:"Crea notas y confirma/rechaza correcciones", color:"#003087" },
   { value:"bodeguero_uio",  label:"Bodeguero Quito",        desc:"Revisa devoluciones de Quito",             color:"#0891b2" },
   { value:"bodeguero_gye",  label:"Bodeguero Guayaquil",    desc:"Revisa devoluciones de Guayaquil",         color:"#2563eb" },
-  { value:"inspector",      label:"Inspector de Calidad",   desc:"Define destinos Stock/Destrucción",        color:"#0d9488" },
+  { value:"inspector_uio",  label:"Inspector Calidad Quito",     desc:"Define destinos Stock/Destrucción — Quito",      color:"#0d9488" },
+  { value:"inspector_gye",  label:"Inspector Calidad Guayaquil", desc:"Define destinos Stock/Destrucción — Guayaquil",  color:"#0f766e" },
   { value:"facturador",     label:"Facturador",             desc:"Corrige facturas y exporta a SAP",         color:"#d97706" },
   { value:"gerente",        label:"Gerente de Operaciones", desc:"Confirma aprobación en SAP",               color:"#16a34a" },
 ];
 
 // Reconoce cualquiera de los dos roles de bodeguero.
 const isBodegueroRole=(role)=>role==="bodeguero_uio"||role==="bodeguero_gye";
-// Ciudad que revisa cada rol de bodeguero.
-const ciudadDeBodeguero=(role)=>role==="bodeguero_uio"?"quito":role==="bodeguero_gye"?"guayaquil":null;
+// Reconoce cualquiera de los dos roles de inspector de calidad.
+const isInspectorRole=(role)=>role==="inspector_uio"||role==="inspector_gye";
+// Ciudad que atiende cada rol REGIONAL (bodegueros e inspectores).
+// Un solo mapa para los cuatro roles: agregar una ciudad nueva en el futuro
+// es agregar dos líneas aquí, sin tocar la lógica de visibilidad.
+const CIUDAD_DE_ROL={
+  bodeguero_uio:"quito",  bodeguero_gye:"guayaquil",
+  inspector_uio:"quito",  inspector_gye:"guayaquil",
+};
+const ciudadDeRol=(role)=>CIUDAD_DE_ROL[role]||null;
 const CIUDADES={quito:"Quito",guayaquil:"Guayaquil"};
 
 // ── ESTADOS ───────────────────────────────────────────────────────────────────
@@ -48,7 +57,8 @@ const ROLE_STATES = {
   rrvv:           ["en_bodega","corregida","aprobada_sap"],
   bodeguero_uio:  ["en_bodega","corregida","en_calidad","en_facturacion","aprobada_sap"],
   bodeguero_gye:  ["en_bodega","corregida","en_calidad","en_facturacion","aprobada_sap"],
-  inspector:      ["en_calidad"],
+  inspector_uio:  ["en_calidad"],
+  inspector_gye:  ["en_calidad"],
   facturador:     ["en_facturacion","enviada_sap","aprobada_sap"],
   gerente:        ["enviada_sap","aprobada_sap"],
 };
@@ -170,13 +180,13 @@ const visibleNotas=(notas,user)=>{
   if(!user) return [];
   if(user.role==="admin") return notas;
   if(user.role==="rrvv") return notas.filter(n=>n.asignadoA===user.id);
-  // Cada bodeguero solo ve las notas de SU ciudad.
-  if(isBodegueroRole(user.role)){
-    const ciudad=ciudadDeBodeguero(user.role);
-    const states=ROLE_STATES[user.role]||[];
-    return notas.filter(n=>n.ciudad===ciudad&&states.includes(n.estado));
-  }
   const states=ROLE_STATES[user.role]||[];
+  // Roles REGIONALES (bodegueros e inspectores): solo ven las notas de SU ciudad.
+  // Antes esta rama era exclusiva de los bodegueros; ahora la comparten los
+  // inspectores de calidad, con la misma mecánica y sin lógica duplicada.
+  const ciudad=ciudadDeRol(user.role);
+  if(ciudad) return notas.filter(n=>n.ciudad===ciudad&&states.includes(n.estado));
+  // Roles nacionales (facturador, gerente): filtran solo por estado.
   return notas.filter(n=>states.includes(n.estado));
 };
 
@@ -699,7 +709,7 @@ function NotaForm({user,users,motivos,setNotas,onBack}) {
               </div>
             </div>
           </div>
-          {ciudad&&<div style={{fontSize:11,color:C.accent,marginTop:8}}>ℹ️ Esta devolución será revisada por el bodeguero de <strong>{CIUDADES[ciudad]}</strong>.</div>}
+          {ciudad&&<div style={{fontSize:11,color:C.accent,marginTop:8}}>ℹ️ Esta devolución será revisada por el bodeguero y el inspector de calidad de <strong>{CIUDADES[ciudad]}</strong>.</div>}
         </div>
 
         <div style={s.row}>
@@ -826,7 +836,7 @@ function NotaDetail({nota,user,setNotas,onBack}) {
 
   const isBod    = isBodeguero;
   const isRRVV   = (rol==="rrvv"&&user.id===nota.asignadoA)||rol==="admin";
-  const isCal    = rol==="inspector";
+  const isCal    = isInspectorRole(rol);
   const isFac    = rol==="facturador";
   const isGer    = rol==="gerente";
 
