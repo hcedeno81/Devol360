@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { db } from "./supabase";
 import { printND } from "./printND";
+import { validarNotasSAP, generarXlsxSAP, cargarPlantillaSAP, descargarBlob } from "./sapExport";
 
 // ── ROLES ─────────────────────────────────────────────────────────────────────
 const ROLES = [
@@ -1115,10 +1116,16 @@ function NotaDetail({nota,user,setNotas,onBack}) {
               if(busy) return;
               setBusy(true);
               try{
-                const {archivo,resultados}=await exportarNotasSAP([nota],user,setNotas);
+                const {archivo,resultados,validacion,abortado}=await exportarNotasSAP([nota],user,setNotas);
+                if(abortado||validacion.length>0){
+                  // Falta información obligatoria: NO se generó el archivo ni
+                  // se marcó la nota. Se indica exactamente qué falta.
+                  notify(`❌ No se generó el archivo de ${nota.ndv}:\n`+validacion.map(e=>e.detalle).join("\n"),"warn");
+                  return;
+                }
                 const r=resultados[0];
-                if(r.ok) notify(`✅ ${nota.ndv} exportada a SAP.\nArchivo: ${archivo}`,"success");
-                else     notify(`❌ No se exportó ${nota.ndv}.\n${r.error}`,"warn");
+                if(r&&r.ok) notify(`✅ ${nota.ndv} exportada a SAP.\nArchivo: ${archivo}`,"success");
+                else        notify(`❌ No se exportó ${nota.ndv}.\n${r?r.error:"Error desconocido."}`,"warn");
                 onBack();
               }catch(e){ notify("Error al exportar: "+e.message); }
               finally{ setBusy(false); }
@@ -1783,40 +1790,61 @@ const descargarCSV=(rows,nombre)=>{
 // para poder rastrear después qué archivo contenía qué notas.
 const nombreArchivoSAP=()=>{
   const d=new Date(); const p=(x)=>String(x).padStart(2,"0");
-  return `SAP_ND_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.csv`;
+  return `SAP_ND_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.xlsx`;
 };
 
-// ⬅ ÚNICO punto a reemplazar cuando llegue la plantilla corporativa de SAP.
-const generarArchivoSAP=(notas,nombre)=>{
-  const rows=[SAP_HEADERS];
-  notas.forEach(n=>rows.push(...filasSAPDeNota(n)));
-  descargarCSV(rows,nombre);
-  return nombre;
+// Los maestros resuelven los datos que la línea no traiga guardados.
+const RESOLVER_SAP={
+  motivoDe:(cod)=>db.mpedido.motivoDe(cod),
+  docSapDe:(fac)=>db.facturas.docSapDe(fac),
 };
 
-// Exporta un conjunto de ND. Devuelve {archivo, resultados[]}.
-// ORDEN DELIBERADO: primero se marca cada ND en la base y solo al final se
-// genera el archivo, y SOLO con las que se marcaron bien. Así nunca se entrega
-// a SAP un archivo con notas que quedaron sin registrar como exportadas.
+// Exporta un conjunto de ND usando la PLANTILLA CORPORATIVA .xlsx.
+// Devuelve {archivo, resultados[], validacion[], abortado}.
+//
+// SECUENCIA:
+//  1. Descarta las ND que no están en estado exportable (evita doble exportación).
+//  2. VALIDA todos los datos obligatorios. Si falta alguno NO se genera nada,
+//     no se marca ninguna ND y se informa exactamente qué falta y dónde.
+//  3. Marca cada ND en la base con bloqueo optimista.
+//  4. Genera el archivo SOLO con las filas de las ND que sí se marcaron, para
+//     que nunca se entregue a SAP una nota que quedó sin registrar.
 async function exportarNotasSAP(seleccion,user,setNotas){
-  const archivo=nombreArchivoSAP();
-  const exportadas=[]; const resultados=[];
+  const resultados=[];
+  const candidatas=[];
   for(const n of seleccion){
-    // Validación de estado: evita doble exportación y estados no válidos.
     if(n.estado!==NOTA_EXPORTABLE){
       resultados.push({ndv:n.ndv,ok:false,
         error:yaExportada(n)?`Ya fue exportada (${STL[n.estado]}). No se exporta de nuevo.`
                             :`Estado no exportable: ${STL[n.estado]||n.estado}.`});
-      continue;
-    }
+    } else candidatas.push(n);
+  }
+  if(candidatas.length===0) return {archivo:null,resultados,validacion:[],abortado:false};
+
+  // ── Validación previa: sin datos completos NO se genera el archivo ────────
+  let validado;
+  try{ validado=await validarNotasSAP(candidatas,RESOLVER_SAP); }
+  catch(e){ return {archivo:null,resultados,validacion:[{ndv:"—",detalle:"Error al validar contra los maestros: "+e.message}],abortado:true}; }
+  if(!validado.ok){
+    return {archivo:null,resultados,validacion:validado.errores,abortado:true};
+  }
+
+  // ── La plantilla se descarga antes de tocar la base ───────────────────────
+  let plantilla;
+  try{ plantilla=await cargarPlantillaSAP(); }
+  catch(e){ return {archivo:null,resultados,validacion:[{ndv:"—",detalle:e.message}],abortado:true}; }
+
+  // ── Marcado en base ──────────────────────────────────────────────────────
+  const archivo=nombreArchivoSAP();
+  const idsOk=[];
+  for(const n of candidatas){
     const registroFinal=cloneForm(n.modActual||n.form);
     const entry={accion:`Exportada a SAP — archivo ${archivo}`,usuario:user.name,fecha:new Date().toLocaleString()};
     const patch={estado:"enviada_sap",registroFinal,modActual:registroFinal,historial:[...n.historial,entry]};
     try{
-      // Bloqueo optimista: solo se marca si sigue en "en_facturacion".
       await db.notas.update(n.id,patch,NOTA_EXPORTABLE);
       setNotas(prev=>prev.map(x=>x.id===n.id?{...x,...patch}:x));
-      exportadas.push({...n,...patch});
+      idsOk.push(n.id);
       resultados.push({ndv:n.ndv,ok:true});
     }catch(e){
       resultados.push({ndv:n.ndv,ok:false,
@@ -1825,15 +1853,32 @@ async function exportarNotasSAP(seleccion,user,setNotas){
           :`Error al registrar en la base: ${e.message}`});
     }
   }
-  if(exportadas.length>0) generarArchivoSAP(exportadas,archivo);
-  return {archivo:exportadas.length>0?archivo:null,resultados};
+
+  // ── Generación del .xlsx con las filas de las ND efectivamente marcadas ───
+  const filas=validado.filas.filter(f=>idsOk.includes(f.__notaId));
+  if(filas.length===0) return {archivo:null,resultados,validacion:[],abortado:false};
+  try{
+    const blob=await generarXlsxSAP(filas,plantilla);
+    descargarBlob(blob,archivo);
+  }catch(e){
+    return {archivo:null,resultados,
+      validacion:[{ndv:"—",detalle:"Las ND se marcaron como exportadas pero el archivo falló: "+e.message+" — usa la reexportación del administrador para regenerarlo."}],
+      abortado:false};
+  }
+  return {archivo,resultados,validacion:[],abortado:false};
 }
 
 // Reexportación AUTORIZADA (solo admin): vuelve a generar el archivo de una ND
 // ya enviada, sin alterar su estado, y deja constancia en el historial.
 async function reexportarNotaSAP(nota,user,setNotas){
+  const validado=await validarNotasSAP([nota],RESOLVER_SAP);
+  if(!validado.ok){
+    throw new Error("No se puede regenerar el archivo:\n"+validado.errores.map(e=>`${e.ndv} — ${e.detalle}`).join("\n"));
+  }
+  const plantilla=await cargarPlantillaSAP();
   const archivo=nombreArchivoSAP();
-  generarArchivoSAP([nota],archivo);
+  const blob=await generarXlsxSAP(validado.filas,plantilla);
+  descargarBlob(blob,archivo);
   const entry={accion:`Reexportada a SAP (autorización de administrador) — archivo ${archivo}`,usuario:user.name,fecha:new Date().toLocaleString()};
   const patch={historial:[...nota.historial,entry]};
   try{
@@ -2024,22 +2069,38 @@ export default function App() {
               {canCreate&&<button style={s.btn()} onClick={()=>setView("nueva")}>+ Nueva Nota</button>}
             </div>
           </div>
-          {expResult&&(
-            <div style={{marginBottom:12,border:`1px solid ${expResult.resultados.some(r=>!r.ok)?"#fde68a":"#bbf7d0"}`,background:expResult.resultados.some(r=>!r.ok)?"#fffbeb":"#f0fdf4",borderRadius:8,padding:12}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                <div style={{fontWeight:"bold",fontSize:13,color:"#166534"}}>
-                  Resultado de la exportación — {expResult.resultados.filter(r=>r.ok).length} exitosa(s), {expResult.resultados.filter(r=>!r.ok).length} con error
+          {expResult&&(()=>{
+            const val=expResult.validacion||[];
+            const hayFallos=val.length>0||expResult.resultados.some(r=>!r.ok);
+            return (
+              <div style={{marginBottom:12,border:`1px solid ${hayFallos?"#fecaca":"#bbf7d0"}`,background:hayFallos?"#fef2f2":"#f0fdf4",borderRadius:8,padding:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{fontWeight:"bold",fontSize:13,color:hayFallos?"#991b1b":"#166534"}}>
+                    {expResult.abortado
+                      ? "⛔ No se generó el archivo — falta información obligatoria"
+                      : `Resultado de la exportación — ${expResult.resultados.filter(r=>r.ok).length} exitosa(s), ${expResult.resultados.filter(r=>!r.ok).length} con error`}
+                  </div>
+                  <button style={s.btn(C.gray,true)} onClick={()=>setExpResult(null)}>Cerrar</button>
                 </div>
-                <button style={s.btn(C.gray,true)} onClick={()=>setExpResult(null)}>Cerrar</button>
+                {expResult.abortado&&(
+                  <div style={{fontSize:12,color:"#991b1b",marginBottom:8}}>
+                    Ninguna ND fue marcada como exportada. Corrige lo siguiente y vuelve a intentarlo:
+                  </div>
+                )}
+                {val.map((e,i)=>(
+                  <div key={`v${i}`} style={{fontSize:12,marginBottom:2,color:C.danger}}>
+                    ❌ <strong>{e.ndv}</strong> — {e.detalle}
+                  </div>
+                ))}
+                {expResult.archivo&&<div style={{fontSize:12,color:C.gray,marginBottom:6}}>📄 Archivo generado: <strong>{expResult.archivo}</strong></div>}
+                {expResult.resultados.map((r,i)=>(
+                  <div key={i} style={{fontSize:12,marginBottom:2,color:r.ok?C.success:C.danger}}>
+                    {r.ok?"✅":"❌"} <strong>{r.ndv}</strong>{r.ok?" — exportada":` — ${r.error}`}
+                  </div>
+                ))}
               </div>
-              {expResult.archivo&&<div style={{fontSize:12,color:C.gray,marginBottom:6}}>📄 Archivo generado: <strong>{expResult.archivo}</strong></div>}
-              {expResult.resultados.map((r,i)=>(
-                <div key={i} style={{fontSize:12,marginBottom:2,color:r.ok?C.success:C.danger}}>
-                  {r.ok?"✅":"❌"} <strong>{r.ndv}</strong>{r.ok?" — exportada":` — ${r.error}`}
-                </div>
-              ))}
-            </div>
-          )}
+            );
+          })()}
           {filteredNotas.length===0?(
             <div style={{textAlign:"center",padding:40,color:C.gray}}>No hay notas en esta categoría.{canCreate&&<div style={{marginTop:8}}><button style={s.btn()} onClick={()=>setView("nueva")}>Crear primera nota</button></div>}</div>
           ):(
