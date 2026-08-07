@@ -345,6 +345,19 @@ export const db = {
       });
       return [...m.entries()].map(([noFactura, v]) => ({ noFactura, vendedor: v.vendedor, cantidadVendida: v.cantidadVendida, docSap: v.docSap }));
     },
+    // Documento SAP de una factura — respaldo para la exportación cuando la
+    // línea de la ND no lo trae guardado (notas creadas antes de esa columna).
+    async docSapDe(noFactura) {
+      const t = (v) => String(v || '').trim();
+      const { data, error } = await supabase.from('fk_facturas')
+        .select('no_factura,doc_sap')
+        .eq('no_factura', t(noFactura))
+        .not('doc_sap', 'is', null)
+        .limit(1);
+      if (error) throw error;
+      if (data && data.length) return t(data[0].doc_sap);
+      return "";
+    },
     // Conteo rápido de líneas de factura del cliente (índice + head:true, no trae datos).
     async countByCliente(codCliente) {
       const { count, error } = await supabase.from('fk_facturas')
