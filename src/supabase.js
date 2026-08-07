@@ -416,6 +416,94 @@ export const db = {
     },
   },
 
+  // ── MAESTRO DE MOTIVOS DE PEDIDO ──────────────────────────────────────────
+  // Relaciona cada material con su Código de Motivo de Pedido (2 alfanuméricos),
+  // que la app recupera automáticamente al agregar un material a una ND y luego
+  // usa en el archivo de carga a SAP. El usuario NUNCA lo escribe a mano.
+  // Clave única: cod_material (un material = un solo motivo).
+  // OJO: no confundir con `motivos` (fk_motivos), que son los motivos de
+  // DEVOLUCIÓN que el RRVV elige en la cabecera de la nota.
+  mpedido: {
+    // BUSCARV: devuelve el motivo de pedido de un material, o "" si no existe.
+    // Mismo fallback tolerante a espacios que db.plotes.fechaCad, porque los
+    // archivos de carga suelen traer espacios residuales.
+    async motivoDe(codMaterial) {
+      const t = (v) => String(v || '').trim();
+      const { data, error } = await supabase.from('fk_motivos_pedido')
+        .select('cod_material,cod_motivo')
+        .eq('cod_material', t(codMaterial))
+        .limit(1);
+      if (error) throw error;
+      if (data && data.length) return t(data[0].cod_motivo);
+      const s = san(codMaterial);
+      if (s) {
+        const r2 = await supabase.from('fk_motivos_pedido')
+          .select('cod_material,cod_motivo')
+          .ilike('cod_material', `%${s}%`)
+          .limit(50);
+        if (r2.error) throw r2.error;
+        const row = (r2.data || []).find(r => t(r.cod_material) === t(codMaterial));
+        if (row) return t(row.cod_motivo);
+      }
+      return "";
+    },
+    // Página para la pantalla de Maestros.
+    async page({ page = 0, pageSize = 50, q = '' } = {}) {
+      let query = supabase.from('fk_motivos_pedido').select('*', { count: 'exact' });
+      const s = san(q);
+      if (s) query = query.or(`cod_material.ilike.%${s}%,cod_motivo.ilike.%${s}%`);
+      const from = page * pageSize;
+      const { data, count, error } = await query.order('cod_material').range(from, from + pageSize - 1);
+      if (error) throw error;
+      return {
+        rows: (data || []).map(r => ({ id: r.id, codMaterial: trf(r.cod_material), codMotivo: trf(r.cod_motivo) })),
+        total: count || 0,
+      };
+    },
+    // UPSERT por cod_material: la recarga masiva actualiza los existentes
+    // e inserta los nuevos, sin duplicar.
+    async insertMany(rows) {
+      const recs = rows.map(r => ({
+        cod_material: String(r.codMaterial || "").trim(),
+        cod_motivo:   String(r.codMotivo   || "").trim(),
+      }));
+      const { data, error } = await supabase.from('fk_motivos_pedido')
+        .upsert(recs, { onConflict: 'cod_material' })
+        .select('id');
+      if (error) throw error;
+      return data || [];
+    },
+    async insert(row) {
+      const rec = {
+        cod_material: String(row.codMaterial || "").trim(),
+        cod_motivo:   String(row.codMotivo   || "").trim(),
+      };
+      const { data, error } = await supabase.from('fk_motivos_pedido')
+        .upsert(rec, { onConflict: 'cod_material' })
+        .select().single();
+      if (error) throw error;
+      return { id: data.id, codMaterial: trf(data.cod_material), codMotivo: trf(data.cod_motivo) };
+    },
+    async update(id, row) {
+      const rec = {
+        cod_material: String(row.codMaterial || "").trim(),
+        cod_motivo:   String(row.codMotivo   || "").trim(),
+      };
+      const { data, error } = await supabase.from('fk_motivos_pedido')
+        .update(rec).eq('id', id).select().single();
+      if (error) throw error;
+      return { id: data.id, codMaterial: trf(data.cod_material), codMotivo: trf(data.cod_motivo) };
+    },
+    async delete(id) {
+      const { error } = await supabase.from('fk_motivos_pedido').delete().eq('id', id);
+      if (error) throw error;
+    },
+    async deleteAll() {
+      const { error } = await supabase.from('fk_motivos_pedido').delete().neq('id', 0);
+      if (error) throw error;
+    },
+  },
+
   notas: {
     async list() {
       const data = await fetchAll((f,t) => supabase.from('fk_notas').select('*').order('id', { ascending: false }).range(f,t));
