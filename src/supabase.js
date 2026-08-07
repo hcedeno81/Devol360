@@ -63,6 +63,7 @@ const mapFactura = (r) => ({
   nombre: trf(r.nombre_material), lote: trf(r.lote),
   cantidad: r.cantidad, valor: r.valor,
   vendedor: trf(r.vendedor), facturador: trf(r.facturador),
+  docSap: trf(r.doc_sap),
 });
 
 // Mapea una fila cruda de fk_notas (snake_case) al formato de la app (camelCase).
@@ -331,7 +332,7 @@ export const db = {
     // Facturas del cliente para material+lote, con vendedor y cantidad vendida.
     async facturasDe(codCliente, codMaterial, lote) {
       let query = supabase.from('fk_facturas')
-        .select('no_factura,vendedor,cantidad')
+        .select('no_factura,vendedor,cantidad,doc_sap')
         .eq('cod_cliente', codCliente).eq('cod_material', codMaterial)
         .limit(500);
       if (lote) query = query.eq('lote', lote);
@@ -340,9 +341,9 @@ export const db = {
       const m = new Map();
       (data || []).forEach(r => {
         const f = trf(r.no_factura);
-        if (f && !m.has(f)) m.set(f, { vendedor: trf(r.vendedor) || '', cantidadVendida: r.cantidad });
+        if (f && !m.has(f)) m.set(f, { vendedor: trf(r.vendedor) || '', cantidadVendida: r.cantidad, docSap: trf(r.doc_sap) || '' });
       });
-      return [...m.entries()].map(([noFactura, v]) => ({ noFactura, vendedor: v.vendedor, cantidadVendida: v.cantidadVendida }));
+      return [...m.entries()].map(([noFactura, v]) => ({ noFactura, vendedor: v.vendedor, cantidadVendida: v.cantidadVendida, docSap: v.docSap }));
     },
     // Conteo rápido de líneas de factura del cliente (índice + head:true, no trae datos).
     async countByCliente(codCliente) {
@@ -373,6 +374,7 @@ export const db = {
         nombre_material: String(r.nombre||"").trim(), lote: String(r.lote||"").trim(),
         cantidad: r.cantidad, valor: r.valor,
         vendedor: String(r.vendedor||"").trim(), facturador: String(r.facturador||"").trim(),
+        doc_sap: String(r.docSap||"").trim(),
       }));
       const { data, error } = await supabase.from('fk_facturas')
         .upsert(recs, { onConflict: 'no_factura,cod_cliente,cod_material,lote' })
@@ -387,6 +389,7 @@ export const db = {
         nombre_material: String(row.nombre||"").trim(), lote: String(row.lote||"").trim(),
         cantidad: row.cantidad, valor: row.valor,
         vendedor: String(row.vendedor||"").trim(), facturador: String(row.facturador||"").trim(),
+        doc_sap: String(row.docSap||"").trim(),
       };
       const { data, error } = await supabase.from('fk_facturas')
         .upsert(rec, { onConflict: 'no_factura,cod_cliente,cod_material,lote' })
@@ -401,6 +404,7 @@ export const db = {
         nombre_material: String(row.nombre||"").trim(), lote: String(row.lote||"").trim(),
         cantidad: row.cantidad, valor: row.valor,
         vendedor: String(row.vendedor||"").trim(), facturador: String(row.facturador||"").trim(),
+        doc_sap: String(row.docSap||"").trim(),
       };
       const { data, error } = await supabase.from('fk_facturas').update(rec).eq('id', id).select().single();
       if (error) throw error;
