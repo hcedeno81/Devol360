@@ -104,7 +104,7 @@ const getEstadoLabel = (estado, role) => {
 
 // Facturas demo: relacionan cliente → material → lote → factura
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-const mkL    = ()=>({codigo:"",nombre:"",motivoPedido:"",porc15:null,medVital:null,cantidad:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",cantidadVendida:"",destino:"",cantStock:"",cantDestruccion:""});
+const mkL    = ()=>({codigo:"",nombre:"",motivoPedido:"",porc15:null,medVital:null,cantidad:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",cantidadVendida:"",docSap:"",destino:"",cantStock:"",cantDestruccion:""});
 const pad    = (arr)=>{ const r=[...arr]; while(r.length<10) r.push(mkL()); return r.slice(0,10); };
 const mkForm = ()=>({fecha:"",codigoCliente:"",nombreCliente:"",tipoDevolucion:"",codigoMotivo:"",descripcionMotivo:"",nc:false,canje:false,observacion:"",noBultos:"",lineas:pad([])});
 const fmtD   = (iso)=>{ if(!iso) return ""; const p=iso.split("-"); if(p.length!==3) return iso; return `${p[2]}/${p[1]}/${p[0]}`; };
@@ -371,7 +371,9 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
 
   const selectFactura=(v)=>{
     const row=facs.find(x=>x.noFactura===v);
-    onChangeLine(i,{facturaNo:v,vendedor:row?.vendedor||l.vendedor||"",cantidadVendida:row?.cantidadVendida??l.cantidadVendida??""});
+    // docSap NO se muestra en pantalla: se guarda en la línea junto al vendedor
+    // y la cantidad vendida (vienen de la misma consulta) y viaja al archivo SAP.
+    onChangeLine(i,{facturaNo:v,vendedor:row?.vendedor||l.vendedor||"",cantidadVendida:row?.cantidadVendida??l.cantidadVendida??"",docSap:row?.docSap??l.docSap??""});
   };
 
   // BUSCARV automático contra el Maestro de Motivos de Pedido.
@@ -1214,7 +1216,7 @@ const MASTERS={
   },
   facturas:{
     label:"🧾 Facturas",
-    cols:["COD_CLIENTE","NOMBRE_CLIENTE","NO_FACTURA","COD_MATERIAL","NOMBRE_MATERIAL","LOTE","CANTIDAD","VALOR","VENDEDOR","FACTURADOR"],
+    cols:["COD_CLIENTE","NOMBRE_CLIENTE","NO_FACTURA","COD_MATERIAL","NOMBRE_MATERIAL","LOTE","CANTIDAD","VALOR","VENDEDOR","FACTURADOR","DOCUMENTO_SAP"],
     fields:[
       ["codCliente","Cód. Cliente *","CLI001"],
       ["nombreCliente","Nombre Cliente *","Clínica Santa María"],
@@ -1226,11 +1228,14 @@ const MASTERS={
       ["valor","Valor *","1500.00"],
       ["vendedor","Vendedor *","Juan Pérez"],
       ["facturador","Facturador *","María López"],
+      // Documento SAP: no se muestra en la ND. Se recupera al elegir la factura
+      // y viaja únicamente al archivo de exportación a SAP.
+      ["docSap","Documento SAP","4900012345"],
     ],
     keyOf:(o)=>`${o.noFactura}|${o.codCliente}|${o.codMaterial}|${o.lote||""}`,
     example:[
-      ["CLI001","Clínica Santa María","F-2024-001","FK-001","Aminoácidos 500ml","L2024A","100","1500.00","Carlos Pérez","Luis Facturador"],
-      ["CLI001","Clínica Santa María","F-2024-001","FK-002","Glucosa 5% 250ml","L2024B","50","800.00","Carlos Pérez","Luis Facturador"],
+      ["CLI001","Clínica Santa María","F-2024-001","FK-001","Aminoácidos 500ml","L2024A","100","1500.00","Carlos Pérez","Luis Facturador","4900012345"],
+      ["CLI001","Clínica Santa María","F-2024-001","FK-002","Glucosa 5% 250ml","L2024B","50","800.00","Carlos Pérez","Luis Facturador","4900012346"],
     ],
   },
 };
@@ -1753,7 +1758,7 @@ const NOTA_EXPORTABLE = "en_facturacion";
 // Una ND ya exportada no se vuelve a exportar (salvo reexportación autorizada del admin).
 const yaExportada = (n)=>n.estado==="enviada_sap"||n.estado==="aprobada_sap";
 
-const SAP_HEADERS=["NDV","TipoProducto","Ciudad","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Mot.Pedido","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Destino","Stock","Destrucción","Estado"];
+const SAP_HEADERS=["NDV","TipoProducto","Ciudad","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Mot.Pedido","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Documento SAP","Destino","Stock","Destrucción","Estado"];
 
 // Filas de una ND: una por cada línea de producto con material.
 const filasSAPDeNota=(n)=>{
@@ -1763,7 +1768,7 @@ const filasSAPDeNota=(n)=>{
   return f.lineas.filter(l=>l.nombre).map(l=>[
     n.ndv,tp,cd,f.nombreCliente,f.codigoCliente,fmtD(f.fecha),f.tipoDevolucion,f.descripcionMotivo,n.rrvvNombre,
     l.codigo,l.nombre,l.motivoPedido||"",l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),
-    l.facturaNo,l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]||n.estado,
+    l.facturaNo,l.docSap||"",l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]||n.estado,
   ]);
 };
 
