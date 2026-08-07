@@ -23,6 +23,8 @@
 // Valores fijos que se repiten en cada fila: A=ZREF · B=318A · C=EL · D=01
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { plantillaSAPEmbebida } from "./plantillaSAP";
+
 export const RUTA_PLANTILLA_SAP = "/plantillas/Formato_Exportacion_SAP_Normal.xlsx";
 
 // Carga JSZip desde CDN bajo demanda (mismo patrón que loadXLSX en App.jsx).
@@ -231,12 +233,33 @@ export function descargarBlob(blob, nombre) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-// Descarga la plantilla desde /public. Si falla, el error es explícito para que
-// no se confunda con un problema de datos.
+// Obtiene la plantilla. Prioriza el archivo de /public (para que Logística
+// pueda actualizarla sin tocar código) y, si falta o llega corrupto, recurre a
+// la copia incrustada en plantillaSAP.js. Así la exportación NUNCA depende de
+// que un binario haya sobrevivido intacto al viaje por Git.
 export async function cargarPlantillaSAP() {
-  const r = await fetch(RUTA_PLANTILLA_SAP);
-  if (!r.ok) {
-    throw new Error(`No se encontró la plantilla SAP en ${RUTA_PLANTILLA_SAP} (HTTP ${r.status}). Verifica que el archivo esté en public/plantillas/.`);
+  try {
+    const r = await fetch(RUTA_PLANTILLA_SAP, { cache: "no-store" });
+    if (r.ok) {
+      const buf = await r.arrayBuffer();
+      if (esXlsxValido(buf)) return buf;
+      console.warn(`[SAP] ${RUTA_PLANTILLA_SAP} llegó corrupto (${buf.byteLength} bytes). Se usa la copia incrustada.`);
+    } else {
+      console.warn(`[SAP] ${RUTA_PLANTILLA_SAP} no disponible (HTTP ${r.status}). Se usa la copia incrustada.`);
+    }
+  } catch (e) {
+    console.warn("[SAP] No se pudo descargar la plantilla:", e.message, "— se usa la copia incrustada.");
   }
-  return r.arrayBuffer();
+
+  const buf = plantillaSAPEmbebida();
+  if (!esXlsxValido(buf)) {
+    throw new Error("La plantilla SAP incrustada está dañada. Contacta al equipo de desarrollo.");
+  }
+  return buf;
+}
+
+// Un .xlsx es un ZIP: sus dos primeros bytes son siempre "PK" (0x50 0x4B).
+function esXlsxValido(buf) {
+  const b = new Uint8Array(buf);
+  return b.length > 1000 && b[0] === 0x50 && b[1] === 0x4b;
 }
