@@ -104,7 +104,7 @@ const getEstadoLabel = (estado, role) => {
 
 // Facturas demo: relacionan cliente → material → lote → factura
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-const mkL    = ()=>({codigo:"",nombre:"",porc15:null,medVital:null,cantidad:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",cantidadVendida:"",destino:"",cantStock:"",cantDestruccion:""});
+const mkL    = ()=>({codigo:"",nombre:"",motivoPedido:"",porc15:null,medVital:null,cantidad:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",cantidadVendida:"",destino:"",cantStock:"",cantDestruccion:""});
 const pad    = (arr)=>{ const r=[...arr]; while(r.length<10) r.push(mkL()); return r.slice(0,10); };
 const mkForm = ()=>({fecha:"",codigoCliente:"",nombreCliente:"",tipoDevolucion:"",codigoMotivo:"",descripcionMotivo:"",nc:false,canje:false,observacion:"",noBultos:"",lineas:pad([])});
 const fmtD   = (iso)=>{ if(!iso) return ""; const p=iso.split("-"); if(p.length!==3) return iso; return `${p[2]}/${p[1]}/${p[0]}`; };
@@ -122,6 +122,18 @@ const check15=(lineas)=>{
 };
 // Combina una advertencia de 15% con la observación existente (si la hay).
 const merge15=(obs,warn)=>{ if(!warn) return obs||""; return warn+(obs?` | ${obs}`:""); };
+
+// ── MOTIVO DE PEDIDO ──────────────────────────────────────────────────────────
+// Mensaje EXACTO definido por Logística. Se usa en todos los puntos donde se
+// bloquea el avance, para que el usuario siempre lea lo mismo.
+const msgSinMotivoPedido=(cod)=>`El material ${cod} no tiene un Motivo de Pedido configurado. Comuníquese con el área de Logística para solicitar su parametrización antes de continuar.`;
+// Devuelve el mensaje del PRIMER material sin motivo de pedido, o "" si todos
+// están parametrizados. Se invoca antes de crear la nota y antes de que el
+// bodeguero la mueva, para que ninguna ND avance con materiales sin motivo.
+const validarMotivosPedido=(lineas)=>{
+  const falta=(lineas||[]).filter(l=>(l.codigo||l.nombre)&&!String(l.motivoPedido||"").trim());
+  return falta.length===0?"":msgSinMotivoPedido(falta[0].codigo||falta[0].nombre);
+};
 
 // Normaliza una fecha (DD/MM/AAAA, AAAA-MM-DD, DD-MM-AAAA...) a ISO AAAA-MM-DD.
 const toISO=(str)=>{
@@ -214,7 +226,7 @@ function ToastHost(){
 // lista, texto libre se limpia al salir), pero las opciones se consultan a
 // Supabase mientras se escribe (debounce 300ms, máx. 15 resultados). El
 // navegador nunca carga el maestro completo — escala a millones de registros.
-function AsyncPicker({value,valueLabel,onSelect,fetcher,placeholder,style,disabled,displayField="label",emptyMsg="Sin coincidencias",invalidMsg="⚠ Debes elegir una opción de la lista."}) {
+function AsyncPicker({value,valueLabel,onSelect,fetcher,placeholder,style,disabled,displayField="label",emptyMsg="Sin coincidencias",invalidMsg="⚠ Debes elegir una opción de la lista.",maxOpts=15}) {
   const [open,setOpen]=useState(false);
   const [text,setText]=useState("");
   const [opts,setOpts]=useState([]);
@@ -281,6 +293,16 @@ function AsyncPicker({value,valueLabel,onSelect,fetcher,placeholder,style,disabl
               <strong>{o.cod}</strong> — {o.label}
             </div>
           ))}
+          {/* AVISO DE LISTA RECORTADA — el servidor devuelve como máximo maxOpts
+              opciones. Si llegaron todas, es casi seguro que hay más que no se
+              ven: sin este aviso el usuario cree que lo que busca no existe.
+              (Caso real: un producto sí facturado al cliente no aparecía en la
+              lista inicial y sí al escribir su código.) */}
+          {!loading&&!errMsg&&opts.length>=maxOpts&&(
+            <div style={{padding:"7px 12px",fontSize:11,color:"#92400e",background:"#fffbeb",borderTop:`1px solid #fde68a`,whiteSpace:"normal",maxWidth:340,position:"sticky",bottom:0}}>
+              ℹ️ Mostrando solo los primeros {maxOpts}. <strong>Escribe el código o el nombre</strong> para buscar entre todos los registros.
+            </div>
+          )}
         </div>
       )}
       {text&&!value&&!open&&!disabled&&(
@@ -296,6 +318,7 @@ function ProductHeader({calEditable}) {
     <thead>
       <tr>
         <th style={s.th}>Nº</th><th style={s.th}>Código</th><th style={s.th}>Descripción</th>
+        <th style={s.th}>Mot. Pedido</th>
         <th style={{...s.th,textAlign:"center"}} colSpan={2}>Porcentaje 15%</th>
         <th style={{...s.th,textAlign:"center"}} colSpan={2}>Medicamento Vital</th>
         <th style={s.th}>Cantidad</th><th style={s.th}>Lote</th><th style={s.th}>F. Vencimiento</th>
@@ -303,7 +326,7 @@ function ProductHeader({calEditable}) {
         <th style={{...s.th,background:calEditable?"#0d9488":"#6b7280"}}>{calEditable?"Stock / Destrucción":"Destino"}</th>
       </tr>
       <tr style={{background:"#1e3a6e"}}>
-        {["","","","Sí","No","Sí","No","","","","",""].map((h,i)=>(
+        {["","","","","Sí","No","Sí","No","","","","",""].map((h,i)=>(
           <th key={i} style={{...s.th,background:"#1e3a6e",textAlign:"center",fontSize:10}}>{h}</th>
         ))}
       </tr>
@@ -351,6 +374,30 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
     onChangeLine(i,{facturaNo:v,vendedor:row?.vendedor||l.vendedor||"",cantidadVendida:row?.cantidadVendida??l.cantidadVendida??""});
   };
 
+  // BUSCARV automático contra el Maestro de Motivos de Pedido.
+  // Se dispara SIEMPRE que se elige un material (por código o por nombre).
+  // El usuario nunca escribe este valor: se recupera del maestro o queda vacío,
+  // y si queda vacío la nota no puede avanzar (ver validarMotivosPedido).
+  const seleccionarProducto=async(o)=>{
+    if(!o){ onChangeLine(i,{codigo:"",nombre:"",motivoPedido:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:""}); return; }
+    let mp="";
+    try{ mp=await db.mpedido.motivoDe(o.cod); }
+    catch(e){ notify("Error al consultar el Motivo de Pedido: "+e.message); }
+    if(!mp) notify(msgSinMotivoPedido(o.cod),"warn");
+    onChangeLine(i,{codigo:o.cod,nombre:o.label,motivoPedido:mp||"",lote:"",fechaVenc:"",facturaNo:"",vendedor:""});
+  };
+
+  // Celda de solo lectura del motivo de pedido.
+  const celdaMotivo=(
+    <td style={s.td}>
+      {l.motivoPedido
+        ? <code style={{background:"#eef2ff",color:C.primary,padding:"2px 7px",borderRadius:3,fontWeight:"bold",fontSize:12}}>{l.motivoPedido}</code>
+        : (l.codigo||l.nombre)
+          ? <span style={{fontSize:10,color:C.danger,fontWeight:"bold"}} title={msgSinMotivoPedido(l.codigo||l.nombre)}>⚠ Sin motivo</span>
+          : <span style={{fontSize:11,color:C.gray}}>—</span>}
+    </td>
+  );
+
   return (
     <tr style={{background:i%2===0?"#f9fafb":"#fff"}}>
       <td style={s.td}>{i+1}</td>
@@ -364,10 +411,7 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
               emptyMsg="Sin productos para este cliente"
               invalidMsg="⚠ Elige un producto de la lista."
               fetcher={(q)=>db.facturas.searchProductos(codigoCliente,q)}
-              onSelect={o=>{
-                if(o) onChangeLine(i,{codigo:o.cod,nombre:o.label,lote:"",fechaVenc:"",facturaNo:"",vendedor:""});
-                else onChangeLine(i,{codigo:"",nombre:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:""});
-              }}/>
+              onSelect={seleccionarProducto}/>
           </td>
           <td style={s.td}>
             <AsyncPicker style={{...s.inp,width:170}} value={l.codigo} valueLabel={l.nombre}
@@ -377,11 +421,9 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
               emptyMsg="Sin productos para este cliente"
               invalidMsg="⚠ Elige un producto de la lista."
               fetcher={(q)=>db.facturas.searchProductos(codigoCliente,q)}
-              onSelect={o=>{
-                if(o) onChangeLine(i,{codigo:o.cod,nombre:o.label,lote:"",fechaVenc:"",facturaNo:"",vendedor:""});
-                else onChangeLine(i,{codigo:"",nombre:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:""});
-              }}/>
+              onSelect={seleccionarProducto}/>
           </td>
+          {celdaMotivo}
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`p15-${i}`} checked={l.porc15==="si"} onChange={()=>onChangeLine(i,{porc15:"si"})}/></td>
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`p15-${i}`} checked={l.porc15==="no"} onChange={()=>onChangeLine(i,{porc15:"no"})}/></td>
           <td style={{...s.td,textAlign:"center"}}><input type="radio" name={`mv-${i}`} checked={l.medVital==="si"} onChange={()=>onChangeLine(i,{medVital:"si"})}/></td>
@@ -437,6 +479,7 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
       ):calEditable?(
         <>
           <td style={s.td}>{l.codigo}</td><td style={s.td}>{l.nombre}</td>
+          {celdaMotivo}
           <td style={{...s.td,textAlign:"center"}}>{l.porc15==="si"?"✓":""}</td>
           <td style={{...s.td,textAlign:"center"}}>{l.porc15==="no"?"✓":""}</td>
           <td style={{...s.td,textAlign:"center"}}>{l.medVital==="si"?"✓":""}</td>
@@ -454,6 +497,7 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
       ):facEditable?(
         <>
           <td style={s.td}>{l.codigo}</td><td style={s.td}>{l.nombre}</td>
+          {celdaMotivo}
           <td style={{...s.td,textAlign:"center"}}>{l.porc15==="si"?"✓":""}</td>
           <td style={{...s.td,textAlign:"center"}}>{l.porc15==="no"?"✓":""}</td>
           <td style={{...s.td,textAlign:"center"}}>{l.medVital==="si"?"✓":""}</td>
@@ -475,6 +519,7 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
       ):(
         <>
           <td style={s.td}>{l.codigo}</td><td style={s.td}>{l.nombre}</td>
+          {celdaMotivo}
           <td style={{...s.td,textAlign:"center"}}>{l.porc15==="si"?"✓":""}</td>
           <td style={{...s.td,textAlign:"center"}}>{l.porc15==="no"?"✓":""}</td>
           <td style={{...s.td,textAlign:"center"}}>{l.medVital==="si"?"✓":""}</td>
@@ -638,6 +683,7 @@ function NotaForm({user,users,motivos,setNotas,onBack}) {
       if(!l.lote)      erroresLinea.push(`Línea ${n}: selecciona el lote.`);
       if(!l.fechaVenc) erroresLinea.push(`Línea ${n}: falta la fecha de vencimiento.`);
       if(!l.facturaNo) erroresLinea.push(`Línea ${n}: selecciona la factura.`);
+      if(!String(l.motivoPedido||"").trim()) erroresLinea.push(msgSinMotivoPedido(l.codigo||l.nombre||`de la línea ${n}`));
       // destino, cantStock, cantDestruccion → los llena el Inspector, no se validan aquí
     });
     if(erroresLinea.length>0) return setSubmitErr(erroresLinea[0]);
@@ -996,6 +1042,8 @@ function NotaDetail({nota,user,setNotas,onBack}) {
                     </div>
                   )}
                   <button style={{...s.btn(C.warning),opacity:busy?0.6:1}} disabled={busy} onClick={()=>{
+                    const faltaMP=validarMotivosPedido(mf.lineas);
+                    if(faltaMP) return notify(faltaMP,"warn");
                     const log=haycambios
                       ? `Bodeguero corrigió → pendiente confirmación RRVV | ${changes.join(" | ")}`
                       : "Bodeguero corrigió → pendiente confirmación RRVV (sin cambios en materiales)";
@@ -1003,6 +1051,8 @@ function NotaDetail({nota,user,setNotas,onBack}) {
                   }}>✏️ Corregir → Enviar a RRVV</button>
                   {!haycambios&&(
                     <button style={{...s.btn(STC.en_bodega),opacity:busy?0.6:1}} disabled={busy} onClick={()=>{
+                      const faltaMP=validarMotivosPedido(mf.lineas);
+                      if(faltaMP) return notify(faltaMP,"warn");
                       act({estado:"en_calidad",modActual:cloneForm(mf),motivoRechazo:null,historial:[...nota.historial,push("Bodeguero aprobó → Inspector de Calidad")]});
                     }}>✅ Aprobar → Calidad</button>
                   )}
@@ -1149,6 +1199,19 @@ const MASTERS={
     dateField:"fechaCad",
     example:[["L2024A","FK-001","Aminoácidos 500ml","2026-07-01","15–25 °C"],["L2025A","FK-001","Aminoácidos 500ml","2027-02-28","15–25 °C"]],
   },
+  mpedido:{
+    label:"🔖 Motivos de Pedido",
+    cols:["COD_MATERIAL","COD_MOTIVO_PEDIDO"],
+    fields:[["codMaterial","Cód. Material *","IEC050"],["codMotivo","Cód. Motivo Pedido *","Z1"]],
+    keyOf:(o)=>o.codMaterial,
+    // Validación específica del maestro: exactamente 3 caracteres alfanuméricos
+    // (E03 / E04 / E07). El requerimiento original decía 2, pero el maestro real
+    // entregado por Logística usa 3. Debe coincidir con el CHECK de la tabla
+    // fk_motivos_pedido en Postgres.
+    validate:(rec)=>/^[A-Za-z0-9]{3}$/.test(String(rec.codMotivo||"").trim())
+      ? "" : `Motivo "${rec.codMotivo}" inválido: debe tener exactamente 3 caracteres alfanuméricos.`,
+    example:[["IEC050","E04"],["7741VE","E07"]],
+  },
   facturas:{
     label:"🧾 Facturas",
     cols:["COD_CLIENTE","NOMBRE_CLIENTE","NO_FACTURA","COD_MATERIAL","NOMBRE_MATERIAL","LOTE","CANTIDAD","VALOR","VENDEDOR","FACTURADOR"],
@@ -1216,6 +1279,7 @@ function DatosMaestros({onMotivosChanged}) {
     for(const [fk] of Mm.fields){ if(fk!==Mm.dateField&&!String(form[fk]||"").trim()) return setErr("Completa todos los campos."); }
     const rec={}; Mm.fields.forEach(([fk])=>{ rec[fk]=String(form[fk]||"").trim(); });
     if(Mm.dateField) rec[Mm.dateField]=toISO(rec[Mm.dateField]);
+    if(Mm.validate){ const vErr=Mm.validate(rec); if(vErr) return setErr(vErr); }
     try{
       if(modal.item) await db[tab].update(modal.item.id,rec);
       else await db[tab].insert(rec); // upsert: si la clave ya existe, actualiza
@@ -1271,6 +1335,8 @@ function DatosMaestros({onMotivosChanged}) {
       const missingFields=requiredFields.filter(fk=>!rec[fk]);
       if(missingFields.length){ errors.push(`Fila ${li+2}: campos obligatorios vacíos: ${missingFields.join(", ")}.`); continue; }
       if(Mm.dateField){ const iso=toISO(rec[Mm.dateField]); if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)){ errors.push(`Fila ${li+2}: fecha inválida "${rec[Mm.dateField]}" (usa AAAA-MM-DD o DD/MM/AAAA).`); continue; } rec[Mm.dateField]=iso; }
+      // Validación propia del maestro (p. ej. formato del Motivo de Pedido).
+      if(Mm.validate){ const vErr=Mm.validate(rec); if(vErr){ errors.push(`Fila ${li+2}: ${vErr}`); continue; } }
       // Duplicados DENTRO del archivo: el upsert fallaría con dos filas de la
       // misma clave en un mismo lote, así que se conserva solo la última.
       const k=Mm.keyOf(rec);
@@ -1687,7 +1753,7 @@ const NOTA_EXPORTABLE = "en_facturacion";
 // Una ND ya exportada no se vuelve a exportar (salvo reexportación autorizada del admin).
 const yaExportada = (n)=>n.estado==="enviada_sap"||n.estado==="aprobada_sap";
 
-const SAP_HEADERS=["NDV","TipoProducto","Ciudad","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Destino","Stock","Destrucción","Estado"];
+const SAP_HEADERS=["NDV","TipoProducto","Ciudad","Cliente","Cód.Cliente","Fecha","Tipo","Motivo","RRVV","Cód.Prod","Descripción","Mot.Pedido","Porc.15%","Med.Vital","Cantidad","Lote","F.Venc","Factura","Destino","Stock","Destrucción","Estado"];
 
 // Filas de una ND: una por cada línea de producto con material.
 const filasSAPDeNota=(n)=>{
@@ -1696,7 +1762,7 @@ const filasSAPDeNota=(n)=>{
   const cd=n.ciudad==="quito"?"Quito":"Guayaquil";
   return f.lineas.filter(l=>l.nombre).map(l=>[
     n.ndv,tp,cd,f.nombreCliente,f.codigoCliente,fmtD(f.fecha),f.tipoDevolucion,f.descripcionMotivo,n.rrvvNombre,
-    l.codigo,l.nombre,l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),
+    l.codigo,l.nombre,l.motivoPedido||"",l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),
     l.facturaNo,l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]||n.estado,
   ]);
 };
