@@ -122,7 +122,14 @@ const LETRAS = ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P",
 
 // Reconstruye una fila de datos clonando los estilos de la fila 2 de la plantilla.
 // `plantillaCeldas` = { A: {s:"10", t:"s", v:"37"}, ... } leído de la fila 2.
-function filaXml(nFila, datos, plantillaCeldas) {
+// `sst` es el registro de cadenas compartidas: los textos se escriben como
+// índices a sharedStrings.xml (t="s"), NO como inlineStr.
+//
+// ¿Por qué importa? inlineStr es XLSX perfectamente válido y Excel lo abre sin
+// problema, pero muchos parsers —el cargador de SAP entre ellos— solo leen
+// cadenas compartidas y rechazan el archivo como "no válido". Con sharedStrings
+// el archivo se carga directo, sin tener que abrirlo y reguardarlo en Excel.
+function filaXml(nFila, datos, plantillaCeldas, sst) {
   const celdas = LETRAS.map((L) => {
     const base = plantillaCeldas[L] || {};
     const s = base.s !== undefined ? ` s="${base.s}"` : "";
@@ -135,7 +142,7 @@ function filaXml(nFila, datos, plantillaCeldas) {
         // Cantidad: valor numérico (la plantilla pide "sin ceros ni comas").
         return `<c r="${ref}"${s}><v>${Number(val)}</v></c>`;
       }
-      return `<c r="${ref}"${s} t="inlineStr"><is><t>${xmlEsc(val)}</t></is></c>`;
+      return `<c r="${ref}"${s} t="s"><v>${sst.indice(val)}</v></c>`;
     }
 
     // Valor fijo heredado de la plantilla (A=ZREF, B=318A, C=EL, D=01)
@@ -151,6 +158,46 @@ function filaXml(nFila, datos, plantillaCeldas) {
   }).join("");
 
   return `<row r="${nFila}" spans="1:37" ht="10.15" customHeight="1">${celdas}</row>`;
+}
+
+// Gestiona sharedStrings.xml: reutiliza las cadenas que ya existen en la
+// plantilla y agrega al final solo las nuevas, devolviendo su índice.
+function crearSST(xml) {
+  const items = [];
+  const re = /<si>([\s\S]*?)<\/si>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) items.push(m[1]);
+
+  // Mapa texto -> índice de las cadenas simples ya presentes (<t>texto</t>).
+  const porTexto = new Map();
+  items.forEach((it, i) => {
+    const t = it.match(/^<t(?:\s[^>]*)?>([\s\S]*?)<\/t>$/);
+    if (t) porTexto.set(t[1], i);
+  });
+
+  // count = total de celdas que referencian cadenas; uniqueCount = nº de <si>.
+  // Se parte del count original de la plantilla (sus encabezados siguen ahí) y
+  // se le suman las referencias que añadimos.
+  const countOriginal = parseInt((xml.match(/<sst[^>]*\scount="(\d+)"/) || [])[1] || "0", 10);
+  let usos = 0;
+  return {
+    indice(valor) {
+      usos++;
+      const esc = xmlEsc(valor);
+      if (porTexto.has(esc)) return porTexto.get(esc);
+      const i = items.length;
+      items.push(`<t xml:space="preserve">${esc}</t>`);
+      porTexto.set(esc, i);
+      return i;
+    },
+    // Reconstruye sharedStrings.xml completo con los contadores correctos.
+    xml() {
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${countOriginal + usos}" uniqueCount="${items.length}">`
+        + items.map((it) => `<si>${it}</si>`).join("")
+        + "</sst>";
+    },
+  };
 }
 
 // Lee las celdas de una fila del XML de la hoja → { A: {s,t,v}, ... }
@@ -191,8 +238,13 @@ export async function generarXlsxSAP(filas, plantillaBuffer) {
     throw new Error("La plantilla no tiene una fila 2 de datos que sirva de modelo.");
   }
 
+  // Cadenas compartidas: se parte de las de la plantilla y se añaden las nuevas.
+  const rutaSST = "xl/sharedStrings.xml";
+  const sstXml = zip.file(rutaSST) ? await zip.file(rutaSST).async("string") : '<sst count="0" uniqueCount="0"></sst>';
+  const sst = crearSST(sstXml);
+
   const ultimaFila = filas.length + 1; // +1 por el encabezado
-  const nuevasFilas = filas.map((d, i) => filaXml(i + 2, d, modelo)).join("");
+  const nuevasFilas = filas.map((d, i) => filaXml(i + 2, d, modelo, sst)).join("");
 
   // 1) Reemplaza el bloque de filas conservando el encabezado (fila 1).
   const mHeader = sheet.match(/<row[^>]*r="1"[\s\S]*?<\/row>/);
@@ -202,19 +254,79 @@ export async function generarXlsxSAP(filas, plantillaBuffer) {
   // 2) Ajusta la dimensión de la hoja.
   sheet = sheet.replace(/<dimension ref="[^"]*"\/>/, `<dimension ref="A1:AK${ultimaFila}"/>`);
 
-  // 3) Si la hoja declara un autofiltro propio, se redimensiona también.
-  sheet = sheet.replace(/<autoFilter ref="[^"]*"/g, `<autoFilter ref="A1:AK${ultimaFila}"`);
+  // 3) Quita el autofiltro de la hoja: el cargador de SAP espera una hoja
+  //    plana, y un rango de filtro obsoleto puede invalidar el archivo.
+  sheet = sheet.replace(/<autoFilter[^>]*\/>/g, "").replace(/<autoFilter[^>]*>[\s\S]*?<\/autoFilter>/g, "");
+
+  // 4) Elimina la referencia al objeto Tabla (tableParts). Ver punto 6.
+  sheet = sheet.replace(/<tableParts[^>]*\/>/g, "").replace(/<tableParts[\s\S]*?<\/tableParts>/g, "");
 
   zip.file(rutaHoja, sheet);
+  zip.file(rutaSST, sst.xml());
 
-  // 4) Redimensiona el objeto Tabla de Excel (si existe), o Excel marca el
-  //    archivo como dañado al abrirlo.
-  const rutaTabla = "xl/tables/table1.xml";
-  if (zip.file(rutaTabla)) {
-    let tabla = await zip.file(rutaTabla).async("string");
-    tabla = tabla.replace(/(<table[^>]*\sref=")[^"]*(")/, `$1A1:AK${ultimaFila}$2`);
-    tabla = tabla.replace(/(<autoFilter[^>]*\sref=")[^"]*(")/, `$1A1:AK${ultimaFila}$2`);
-    zip.file(rutaTabla, tabla);
+  // 5) QUITA EL OBJETO TABLA DE EXCEL.
+  //    La plantilla trae una "Tabla1" con autofiltro. Excel la maneja sin
+  //    problema, pero los cargadores de SAP esperan una hoja plana y una
+  //    estructura de tabla suele hacer que rechacen el archivo. Se elimina la
+  //    parte, su relación y su declaración de tipo de contenido — los datos,
+  //    estilos y encabezados quedan intactos.
+  if (zip.file("xl/tables/table1.xml")) {
+    zip.remove("xl/tables/table1.xml");
+
+    const relsPath = "xl/worksheets/_rels/sheet1.xml.rels";
+    if (zip.file(relsPath)) {
+      let rels = await zip.file(relsPath).async("string");
+      rels = rels.replace(/<Relationship[^>]*\/tables\/[^>]*\/>/g, "");
+      zip.file(relsPath, rels);
+    }
+
+    const ctPath = "[Content_Types].xml";
+    if (zip.file(ctPath)) {
+      let ct = await zip.file(ctPath).async("string");
+      ct = ct.replace(/<Override[^>]*\/xl\/tables\/table1\.xml"[^>]*\/>/g, "")
+             .replace(/<Override[^>]*PartName="\/xl\/tables\/table1\.xml"[^>]*\/>/g, "");
+      zip.file(ctPath, ct);
+    }
+  }
+
+  // 6) QUITA EL ENLACE EXTERNO.
+  //    La plantilla referencia un archivo en una unidad de red
+  //    (K:\Bodega PT\...\REGISTRO DE DEVOLUCIONES 2026.xlsx) que ninguna
+  //    fórmula usa. Es basura heredada y un lector externo puede intentar
+  //    resolverla y fallar.
+  if (zip.file("xl/externalLinks/externalLink1.xml")) {
+    zip.remove("xl/externalLinks/externalLink1.xml");
+    zip.remove("xl/externalLinks/_rels/externalLink1.xml.rels");
+
+    const wbRels = "xl/_rels/workbook.xml.rels";
+    if (zip.file(wbRels)) {
+      let r = await zip.file(wbRels).async("string");
+      r = r.replace(/<Relationship[^>]*externalLink[^>]*\/>/g, "");
+      zip.file(wbRels, r);
+    }
+    const wbPath = "xl/workbook.xml";
+    if (zip.file(wbPath)) {
+      let wb = await zip.file(wbPath).async("string");
+      wb = wb.replace(/<externalReferences[\s\S]*?<\/externalReferences>/g, "");
+      zip.file(wbPath, wb);
+    }
+    const ctPath = "[Content_Types].xml";
+    if (zip.file(ctPath)) {
+      let ct = await zip.file(ctPath).async("string");
+      ct = ct.replace(/<Override[^>]*externalLink1\.xml"[^>]*\/>/g, "");
+      zip.file(ctPath, ct);
+    }
+  }
+
+  // 7) Los valores en caché de las fórmulas ya no aplican: se fuerza el
+  //    recálculo completo al abrir (inofensivo, la plantilla no tiene fórmulas).
+  const wbPath = "xl/workbook.xml";
+  if (zip.file(wbPath)) {
+    let wb = await zip.file(wbPath).async("string");
+    if (!/fullCalcOnLoad/.test(wb)) {
+      wb = wb.replace(/<calcPr[^>]*\/>/, '<calcPr calcId="0" fullCalcOnLoad="1"/>');
+    }
+    zip.file(wbPath, wb);
   }
 
   return zip.generateAsync({
