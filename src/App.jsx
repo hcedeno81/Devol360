@@ -367,7 +367,11 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
       catch(e){ notify("Error al consultar fecha de vencimiento: "+e.message); }
       if(!fv) notify(`⚠ El lote ${v} del material ${l.codigo} no tiene fecha de vencimiento en el maestro Producto-Lote. Verifica que ese lote esté cargado en Maestros → Producto-Lote.`,"warn");
     }
-    onChangeLine(i,{lote:v,fechaVenc:fv||"",facturaNo:"",vendedor:""});
+    // Al cambiar de lote hay que limpiar TODO lo que venía de la factura
+    // anterior: nº de factura, vendedor, cantidad vendida y documento SAP.
+    // Si docSap/cantidadVendida no se limpian, quedan valores de otra factura
+    // y llegarían al archivo de SAP o al cálculo del 15%.
+    onChangeLine(i,{lote:v,fechaVenc:fv||"",facturaNo:"",vendedor:"",cantidadVendida:"",docSap:""});
   };
 
   const selectFactura=(v)=>{
@@ -382,12 +386,12 @@ const ProductRow = memo(function ProductRow({l,i,editable,calEditable,facEditabl
   // El usuario nunca escribe este valor: se recupera del maestro o queda vacío,
   // y si queda vacío la nota no puede avanzar (ver validarMotivosPedido).
   const seleccionarProducto=async(o)=>{
-    if(!o){ onChangeLine(i,{codigo:"",nombre:"",motivoPedido:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:""}); return; }
+    if(!o){ onChangeLine(i,{codigo:"",nombre:"",motivoPedido:"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",cantidadVendida:"",docSap:""}); return; }
     let mp="";
     try{ mp=await db.mpedido.motivoDe(o.cod); }
     catch(e){ notify("Error al consultar el Motivo de Pedido: "+e.message); }
     if(!mp) notify(msgSinMotivoPedido(o.cod),"warn");
-    onChangeLine(i,{codigo:o.cod,nombre:o.label,motivoPedido:mp||"",lote:"",fechaVenc:"",facturaNo:"",vendedor:""});
+    onChangeLine(i,{codigo:o.cod,nombre:o.label,motivoPedido:mp||"",lote:"",fechaVenc:"",facturaNo:"",vendedor:"",cantidadVendida:"",docSap:""});
   };
 
   // Celda de solo lectura del motivo de pedido.
@@ -637,7 +641,6 @@ function Login({onLogin}) {
 
 // ── NOTA FORM ─────────────────────────────────────────────────────────────────
 function NotaForm({user,users,motivos,setNotas,onBack}) {
-  const rrvvList=users.filter(u=>u.role==="rrvv"&&u.active);
   const hoy=new Date().toISOString().split("T")[0];
   const [form,setForm]=useState({...mkForm(),fecha:hoy});
   const [asig,setAsig]=useState(String(user.id));
@@ -1288,7 +1291,16 @@ function DatosMaestros({onMotivosChanged}) {
 
   const save=async()=>{
     const Mm=MASTERS[tab];
-    for(const [fk] of Mm.fields){ if(fk!==Mm.dateField&&!String(form[fk]||"").trim()) return setErr("Completa todos los campos."); }
+    // Solo se exigen los campos marcados con " *" en su etiqueta — el mismo
+    // criterio que usa la carga masiva. Antes se exigían TODOS, lo que hacía
+    // imposible dar de alta manualmente una factura sin Lote o sin Documento
+    // SAP (ambos opcionales), aunque el archivo sí los aceptaba vacíos.
+    const obligatorios=Mm.fields.filter(([,label])=>label.includes(" *")).map(([fk])=>fk);
+    const faltan=obligatorios.filter(fk=>!String(form[fk]||"").trim());
+    if(faltan.length>0){
+      const etiquetas=faltan.map(fk=>(Mm.fields.find(([k])=>k===fk)||[])[1]?.replace(" *","")||fk);
+      return setErr(`Completa los campos obligatorios: ${etiquetas.join(", ")}.`);
+    }
     const rec={}; Mm.fields.forEach(([fk])=>{ rec[fk]=String(form[fk]||"").trim(); });
     if(Mm.dateField) rec[Mm.dateField]=toISO(rec[Mm.dateField]);
     if(Mm.validate){ const vErr=Mm.validate(rec); if(vErr) return setErr(vErr); }
@@ -1308,7 +1320,10 @@ function DatosMaestros({onMotivosChanged}) {
     catch(e){ notify("Error al eliminar: "+e.message); }
   };
   const doConfirmDelAll=async()=>{
-    try{ await db[tab].deleteAll(); setConfirmDelAll(false); setImportResult(null); await afterMutate(); }
+    // setPage(0) es imprescindible: si el usuario estaba en la página 5 y se
+    // borran todos los registros, la recarga pediría un rango que ya no existe
+    // y Supabase responde "Requested range not satisfiable".
+    try{ await db[tab].deleteAll(); setConfirmDelAll(false); setImportResult(null); setPage(0); setQ(""); await afterMutate(); }
     catch(e){ notify("Error al eliminar todos: "+e.message); }
   };
 
@@ -1335,7 +1350,7 @@ function DatosMaestros({onMotivosChanged}) {
     const idx=Mm.cols.map(c=>header.indexOf(c));
     const missing=Mm.cols.filter((c,i)=>idx[i]===-1);
     if(missing.length){ setImportResult({ok:0,errors:[`Columnas faltantes: ${missing.join(", ")}. La primera fila debe tener exactamente: ${Mm.cols.join(", ")}. (Usa la plantilla descargada.)`]}); return; }
-    const errors=[]; const newItems=[]; const seenInFile=new Set();
+    const errors=[]; const newItems=[]; const seenInFile=new Map(); // clave → posición en newItems
     const dataRows=rowsAoa.slice(1).filter(cols=>cols&&!cols.every(c=>String(c==null?"":c).trim()===""));
     const totalRows=dataRows.length;
     // ── Fase 1: validar ────────────────────────────────────────────────────────
@@ -1351,9 +1366,13 @@ function DatosMaestros({onMotivosChanged}) {
       if(Mm.validate){ const vErr=Mm.validate(rec); if(vErr){ errors.push(`Fila ${li+2}: ${vErr}`); continue; } }
       // Duplicados DENTRO del archivo: el upsert fallaría con dos filas de la
       // misma clave en un mismo lote, así que se conserva solo la última.
+      // Duplicados DENTRO del archivo: se conserva la última fila de cada clave.
+      // seenInFile guarda la POSICIÓN, no solo la clave: con findIndex esto era
+      // O(n²) y un archivo de cientos de miles de filas con repetidos podía
+      // congelar el navegador.
       const k=Mm.keyOf(rec);
-      if(seenInFile.has(k)){ const j=newItems.findIndex(x=>Mm.keyOf(x)===k); if(j>=0) newItems[j]=rec; continue; }
-      seenInFile.add(k); newItems.push(rec);
+      if(seenInFile.has(k)){ newItems[seenInFile.get(k)]=rec; continue; }
+      seenInFile.set(k,newItems.length); newItems.push(rec);
       if(li%200===0) setImporting({fase:"Validando filas…",pct:Math.round((li/totalRows)*40),total:totalRows,done:li});
     }
     // ── Fase 2: upsert en lotes de 500 ─────────────────────────────────────────
@@ -1757,8 +1776,8 @@ function Stats({notas,user}) {
 // ── EXPORTACIÓN A SAP ─────────────────────────────────────────────────────────
 // UNA SOLA fuente de verdad para el archivo que se carga en SAP, usada tanto por
 // la exportación individual como por la masiva.
-// Cuando llegue la plantilla corporativa .xlsx, SOLO se reemplaza
-// generarArchivoSAP(): los flujos, las validaciones y la trazabilidad no cambian.
+// El archivo se genera sobre la plantilla corporativa .xlsx (ver sapExport.js):
+// esta sección se encarga del flujo, las validaciones y la trazabilidad.
 
 // Estado en el que una ND puede exportarse. Cualquier otro se rechaza.
 const NOTA_EXPORTABLE = "en_facturacion";
@@ -1772,7 +1791,9 @@ const filasSAPDeNota=(n)=>{
   const f=n.registroFinal||n.modActual||n.form;
   const tp=n.tipoProducto==="controlado"?"Controlado":"Normal";
   const cd=n.ciudad==="quito"?"Quito":"Guayaquil";
-  return f.lineas.filter(l=>l.nombre).map(l=>[
+  // Se filtra por código O nombre: filtrar solo por nombre descartaba
+  // silenciosamente cualquier línea que tuviera código y no descripción.
+  return f.lineas.filter(l=>l.codigo||l.nombre).map(l=>[
     n.ndv,tp,cd,f.nombreCliente,f.codigoCliente,fmtD(f.fecha),f.tipoDevolucion,f.descripcionMotivo,n.rrvvNombre,
     l.codigo,l.nombre,l.motivoPedido||"",l.porc15==="si"?"Sí":"No",l.medVital==="si"?"Sí":"No",l.cantidad,l.lote,fmtD(l.fechaVenc),
     l.facturaNo,l.docSap||"",l.destino,l.cantStock,l.cantDestruccion,STL[n.estado]||n.estado,
@@ -1781,9 +1802,14 @@ const filasSAPDeNota=(n)=>{
 
 const descargarCSV=(rows,nombre)=>{
   const csv=rows.map(r=>r.map(c=>`"${String(c==null?"":c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  // Se usa Blob y no un data-URI: los navegadores limitan la longitud de la URL
+  // (unos pocos MB) y con muchas notas la descarga fallaba en silencio.
+  const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+  const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
-  a.href="data:text/csv;charset=utf-8,\uFEFF"+encodeURIComponent(csv);
-  a.download=nombre; a.click();
+  a.href=url; a.download=nombre;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
 };
 
 // Nombre único del archivo — queda registrado en el historial de cada ND
@@ -1949,7 +1975,12 @@ export default function App() {
   const reloadNotas=async()=>{
     if(refreshing) return;
     setRefreshing(true);
-    try{ setNotas(await db.notas.list()); }
+    try{
+      setNotas(await db.notas.list());
+      // La selección previa puede referirse a ND que otro usuario ya movió:
+      // se limpia para que el facturador no exporte creyendo que sigue vigente.
+      setSelIds([]);
+    }
     catch(e){ notify("Error al actualizar: "+e.message); }
     finally{ setRefreshing(false); }
   };
